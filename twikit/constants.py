@@ -336,6 +336,14 @@ EXPLORE_PAGE_FEATURES = {
   "responsive_web_enhance_cards_enabled": False
 }
 
+# NOTE: you can fetch these using explore_page
+TIMELINE_IDS = {
+    'trending': 'VGltZWxpbmU6DAC2CwABAAAACHRyZW5kaW5nAAA=',
+    'for-you': 'VGltZWxpbmU6DAC2CwABAAAAB2Zvcl95b3UAAA==',
+    'news': 'VGltZWxpbmU6DAC2CwABAAAABG5ld3MAAA==',
+    'sports': 'VGltZWxpbmU6DAC2CwABAAAABnNwb3J0cwAA',
+    'entertainment': 'VGltZWxpbmU6DAC2CwABAAAADWVudGVydGFpbm1lbnQAAA==',
+}
 GENERIC_TIMELINE_FEATURES = {
   "rweb_video_screen_enabled": False,
   "payments_enabled": False,
