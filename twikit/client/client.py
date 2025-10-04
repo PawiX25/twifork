@@ -18,7 +18,7 @@ from httpx._utils import URLPattern
 from .._captcha import Capsolver
 from ..bookmark import BookmarkFolder
 from ..community import Community, CommunityMember
-from ..constants import TOKEN, DOMAIN
+from ..constants import TOKEN, DOMAIN, TIMELINE_IDS
 from ..errors import (
     AccountLocked,
     AccountSuspended,
@@ -2619,30 +2619,27 @@ class Client:
         ...
         """
         category = category.lower()
-        if category in ['news', 'sports', 'entertainment']:
-            category += '_unified'
-        response, _ = await self.v11.guide(category, count, additional_request_params)
-
-        entry_id_prefix = 'trends' if category == 'trending' else 'Guide'
+        timeline_id = TIMELINE_IDS.get(category)
+        if timeline_id is None:
+            return []
+        
+        response, _ = await self.gql.generic_timeline_by_id(timeline_id, count)
+        entry_id_prefix = "trend"
         entries = [
             i for i in find_dict(response, 'entries', find_one=True)[0]
             if i['entryId'].startswith(entry_id_prefix)
         ]
-
         if not entries:
-            if not retry:
-                return []
-            # Recall the method again, as the trend information
-            # may not be returned due to a Twitter error.
-            return await self.get_trends(category, count, retry, additional_request_params)
-
-        items = entries[-1]['content']['timelineModule']['items']
-
+          if not retry:
+              return []
+          # Recall the method again, as the trend information
+          # may not be returned due to a Twitter error.
+          return await self.get_trends(category, count, retry, additional_request_params)
+        
         results = []
-        for item in items:
-            trend_info = item['item']['content']['trend']
+        for entry in entries:
+            trend_info = entry['content']['itemContent']
             results.append(Trend(self, trend_info))
-
         return results
 
     async def get_available_locations(self) -> list[Location]:
