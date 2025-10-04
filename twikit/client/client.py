@@ -2638,7 +2638,10 @@ class Client:
         
         results = []
         for entry in entries:
-            trend_info = entry['content']['itemContent']
+            item_content = entry['content'].get('itemContent', {})
+            trend_info = item_content.get('trend')
+            if not trend_info:
+                continue
             results.append(Trend(self, trend_info))
         return results
 
