@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 import filetype
 import pyotp
-from httpx import AsyncClient, AsyncHTTPTransport, HTTPError, Response
+from httpx import AsyncClient, AsyncHTTPTransport, HTTPError, Request, Response
 from httpx._utils import URLPattern
 
 from .._captcha import Capsolver
@@ -95,6 +95,7 @@ class Client:
         proxy: str | None = None,
         captcha_solver: Capsolver | None = None,
         user_agent: str | None = None,
+        impersonate: str | None = None,
         **kwargs
     ) -> None:
         if 'proxies' in kwargs:
@@ -107,6 +108,13 @@ class Client:
         self.http = AsyncClient(proxy=proxy, **kwargs)
         self.language = language
         self.proxy = proxy
+        # Optional curl_cffi transport: some X edges reject httpx's TLS fingerprint
+        # with a 403 HTML page, so impersonate a browser when requested.
+        self._impersonate = impersonate
+        self._curl_session = None
+        if impersonate is not None:
+            from curl_cffi.requests import AsyncSession
+            self._curl_session = AsyncSession(proxy=proxy, impersonate=impersonate)
         self.captcha_solver = captcha_solver
         if captcha_solver is not None:
             captcha_solver.client = self
@@ -119,6 +127,36 @@ class Client:
 
         self.gql = GQLClient(self)
         self.v11 = V11Client(self)
+
+    async def _send(self, method, url, **kwargs) -> Response:
+        if self._curl_session is None:
+            return await self.http.request(method, url, **kwargs)
+        # Route through curl_cffi, sharing the httpx cookie jar both ways so that
+        # ct0, auth and cookie persistence keep working unchanged.
+        cookies = dict(self.http.cookies)
+        params = kwargs.get('params')
+        data = kwargs.get('data')
+        r = await self._curl_session.request(
+            method, url,
+            headers=kwargs.get('headers'),
+            params=params,
+            data=data,
+            cookies=cookies,
+        )
+        for k, v in r.cookies.items():
+            self.http.cookies.set(k, v)
+        # curl_cffi already decompressed the body; drop encoding/length headers
+        # so httpx doesn't try to decode it a second time.
+        resp_headers = {
+            k: v for k, v in r.headers.items()
+            if k.lower() not in ('content-encoding', 'content-length')
+        }
+        return Response(
+            status_code=r.status_code,
+            headers=resp_headers,
+            content=r.content,
+            request=Request(method, url),
+        )
 
     async def request(
         self,
@@ -147,7 +185,7 @@ class Client:
         headers['X-Client-Transaction-Id'] = tid
 
         cookies_backup = self.get_cookies().copy()
-        response = await self.http.request(method, url, headers=headers, **kwargs)
+        response = await self._send(method, url, headers=headers, **kwargs)
         self._remove_duplicate_ct0_cookie()
 
         try:
@@ -172,7 +210,7 @@ class Client:
                 if auto_unlock:
                     await self.unlock()
                     self.set_cookies(cookies_backup, clear_cookies=True)
-                    response = await self.http.request(method, url, **kwargs)
+                    response = await self._send(method, url, **kwargs)
                     self._remove_duplicate_ct0_cookie()
                     try:
                         response_data = response.json()

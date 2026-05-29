@@ -22,6 +22,9 @@ setup(
         'm3u8',
         'Js2Py-3.13'
     ],
+    extras_require={
+        'impersonate': ['curl_cffi>=0.7,<0.8'],
+    },
     python_requires='>=3.8',
     description='Twitter API wrapper for python with **no API key required**.',
     long_description=long_description,
