@@ -83,15 +83,18 @@ class User:
     def __init__(self, client: GuestClient, data: dict) -> None:
         self._client = client
         legacy = data.get('legacy', {})
+        core = data.get('core', {})
+        avatar = data.get('avatar', {})
+        location = data.get('location', {})
 
         self.id: str = data.get('rest_id', '')
-        self.created_at: str = legacy.get('created_at', '')
-        self.name: str = legacy.get('name', '')
-        self.screen_name: str = legacy.get('screen_name', '')
-        self.profile_image_url: str = legacy.get('profile_image_url_https', '')
+        self.created_at: str = core.get('created_at') or legacy.get('created_at', '')
+        self.name: str = core.get('name') or legacy.get('name', '')
+        self.screen_name: str = core.get('screen_name') or legacy.get('screen_name', '')
+        self.profile_image_url: str = avatar.get('image_url') or legacy.get('profile_image_url_https', '')
         self.profile_banner_url: str = legacy.get('profile_banner_url')
         self.url: str = legacy.get('url')
-        self.location: str = legacy.get('location', '')
+        self.location: str = location.get('location') or legacy.get('location', '')
         self.description: str = legacy.get('description', '')
         self.description_urls: list = legacy.get('entities', {}).get('description', {}).get('urls', [])
         self.urls: list = legacy.get('entities', {}).get('url', {}).get('urls')
