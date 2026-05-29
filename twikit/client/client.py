@@ -2638,11 +2638,10 @@ class Client:
         
         results = []
         for entry in entries:
-            item_content = entry['content'].get('itemContent', {})
-            trend_info = item_content.get('trend')
-            if not trend_info:
+            item_content = entry['content'].get('itemContent')
+            if not item_content or item_content.get('itemType') != 'TimelineTrend':
                 continue
-            results.append(Trend(self, trend_info))
+            results.append(Trend(self, item_content))
         return results
 
     async def get_available_locations(self) -> list[Location]:
