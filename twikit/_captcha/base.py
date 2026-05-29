@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from bs4 import BeautifulSoup
 from httpx import Response
 from ..constants import DOMAIN
+from ..ui_metrics import solve_ui_metrics
 
 if TYPE_CHECKING:
     from ..client.client import Client
@@ -64,7 +65,9 @@ class CaptchaSolver:
             data['language_code'] = 'en'
             params['lang'] = 'en'
         if ui_metrics:
-            data['ui_metrics'] = await self.client._ui_metrix()
+            data['ui_metrics'] = solve_ui_metrics(
+                await self.client._ui_metrics()
+            )
         headers = {
             'Content-Type': 'application/x-www-form-urlencoded',
             'Upgrade-Insecure-Requests': '1',
