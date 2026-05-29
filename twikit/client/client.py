@@ -2089,13 +2089,21 @@ class Client:
         next_cursor = items[-1]['content']['value']
         results = []
 
-        for item in items:
-            if 'itemContent' not in item['content']:
-                continue
+        def handle_item(item):
             tweet = tweet_from_data(self, item)
-            if tweet is None:
-                continue
-            results.append(tweet)
+            if tweet is not None:
+                results.append(tweet)
+
+        for item in items:
+            if 'items' in item['content']:  # home-conversation entries
+                for sub_item in item['content']['items']:
+                    if 'itemContent' not in sub_item['item']:
+                        continue
+                    handle_item(sub_item)
+            else:  # tweet entries
+                if 'itemContent' not in item['content']:
+                    continue
+                handle_item(item)
 
         return Result(
             results,
@@ -2796,8 +2804,14 @@ class Client:
         Retrieves the latest friends (following users).
         Max count : 200
         """
-        return await self._get_user_friendship_2(
-            user_id, screen_name, count, self.v11.friends_list, cursor
+        # X retired the v1.1 friends/list endpoint (now 404s); use the GraphQL
+        # Following endpoint instead, resolving screen_name to an id when needed.
+        if user_id is None:
+            if screen_name is None:
+                raise ValueError('user_id or screen_name is required')
+            user_id = (await self.get_user_by_screen_name(screen_name)).id
+        return await self._get_user_friendship(
+            user_id, count, self.gql.following, cursor
         )
 
     async def get_user_verified_followers(
@@ -3646,13 +3660,18 @@ class Client:
         next_cursor = items[-1]['content']['value']
 
         results = []
-        for item in items:
-            if not item['entryId'].startswith('tweet'):
-                continue
 
+        def handle_item(item):
             tweet = tweet_from_data(self, item)
             if tweet is not None:
                 results.append(tweet)
+
+        for item in items:
+            if item['entryId'].startswith('tweet'):
+                handle_item(item)
+            elif item['entryId'].startswith('list-conversation'):
+                for sub_item in item['content']['items']:
+                    handle_item(sub_item)
 
         return Result(
             results,
