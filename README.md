@@ -32,6 +32,33 @@ You can use functions such as posting or searching for tweets without an API key
 > For more details, visit: https://github.com/d60/twikit_grok.
 
 
+## About this fork
+
+A fork of [d60/twikit](https://github.com/d60/twikit) with fixes for breakages
+that make the upstream PyPI release (`twikit==2.3.3`) unusable as of 2026.
+Install it with:
+
+```
+pip install git+https://github.com/PawiX25/twikit.git
+```
+
+Fixes included (resolving the corresponding upstream issues):
+
+- **ClientTransaction / `Couldn't get KEY_BYTE indices`** — updated `ondemand.s.js`
+  parsing for the new X webpack bundle, so GraphQL requests work again
+  (#408, #409).
+- **`KeyError` on missing optional fields** in `User.__init__` and
+  `Client.request` — defensive `.get()` parsing (#417, #350, #425, #344).
+- **`get_tweet_by_id` `KeyError: 'itemContent'`** — handles both the legacy and
+  the new trailing-cursor shapes (#332, #363).
+- **`search_tweet` 404** — refreshed `SearchTimeline` query id and features.
+- **`get_trends` deprecated / returns nothing** — rewritten on top of
+  `GenericTimelineById`; also adds `get_explore_page()` (#389).
+- **`RecursionError` on rate-limit** — the 429 recovery path no longer recurses.
+
+Issues that stem from X-side restrictions (account suspension, Cloudflare/IP
+blocks, captcha, automation limits) are not fixable in the library and are out
+of scope.
 
 
 ## Features

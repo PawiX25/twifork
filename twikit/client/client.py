@@ -2644,6 +2644,32 @@ class Client:
             results.append(Trend(self, item_content))
         return results
 
+    async def get_explore_page(self) -> list[Trend]:
+        """
+        Retrieves the trends shown on the Explore page.
+
+        Returns
+        -------
+        list[:class:`Trend`]
+            A list of Trend objects from the Explore page.
+
+        Examples
+        --------
+        >>> trends = await client.get_explore_page()
+        >>> for trend in trends:
+        ...     print(trend)
+        <Trend name="...">
+        """
+        response, _ = await self.gql.explore_page()
+        entries = find_dict(response, 'entries', find_one=True)[0]
+        results = []
+        for entry in entries:
+            item_content = entry['content'].get('itemContent')
+            if not item_content or item_content.get('itemType') != 'TimelineTrend':
+                continue
+            results.append(Trend(self, item_content))
+        return results
+
     async def get_available_locations(self) -> list[Location]:
         """
         Retrieves locations where trends can be retrieved.
