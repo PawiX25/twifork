@@ -1978,15 +1978,29 @@ class Client:
             return Result([])
         instructions = instructions_[0]
 
-        items = instructions[-1]['entries']
-        next_cursor = items[-1]['content']['value']
-        previous_cursor = items[-2]['content']['value']
+        # accounts with no visible tweets return a timeline with no entries or
+        # cursor entries; derive cursors only when present, else return empty
+        entries_instr = find_dict(response, 'entries', find_one=True)
+        items = entries_instr[0] if entries_instr else []
+
+        def _cursor(entries, kind):
+            for entry in entries:
+                if entry.get('entryId', '').startswith(f'cursor-{kind}'):
+                    return entry.get('content', {}).get('value')
+            return None
+
+        next_cursor = _cursor(items, 'bottom')
+        previous_cursor = _cursor(items, 'top')
 
         if tweet_type == 'Media':
             if cursor is None:
-                items = items[0]['content']['items']
+                module_items = [
+                    e for e in items
+                    if 'items' in e.get('content', {})
+                ]
+                items = module_items[0]['content']['items'] if module_items else []
             else:
-                items = instructions[0]['moduleItems']
+                items = instructions[0].get('moduleItems', []) if instructions else []
 
         results = []
         for item in items:
