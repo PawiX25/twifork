@@ -211,6 +211,11 @@ class Tweet:
             return tweet_from_data(self._client, quoted_tweet)
 
     @property
+    def quoted_status_id(self) -> str | None:
+        """The ID of the quoted tweet, if this tweet is a quote."""
+        return self._legacy.get('quoted_status_id_str')
+
+    @property
     def retweeted_tweet(self) -> Tweet | None:
         if self._legacy.get('retweeted_status_result'):
             retweeted_tweet = self._legacy['retweeted_status_result']
