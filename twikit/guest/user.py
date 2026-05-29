@@ -86,6 +86,9 @@ class User:
         core = data.get('core', {})
         avatar = data.get('avatar', {})
         location = data.get('location', {})
+        verification = data.get('verification', {})
+        privacy = data.get('privacy', {})
+        profile_bio = data.get('profile_bio', {})
 
         self.id: str = data.get('rest_id', '')
         self.created_at: str = core.get('created_at') or legacy.get('created_at', '')
@@ -95,12 +98,12 @@ class User:
         self.profile_banner_url: str = legacy.get('profile_banner_url')
         self.url: str = legacy.get('url')
         self.location: str = location.get('location') or legacy.get('location', '')
-        self.description: str = legacy.get('description', '')
+        self.description: str = profile_bio.get('description') or legacy.get('description', '')
         self.description_urls: list = legacy.get('entities', {}).get('description', {}).get('urls', [])
         self.urls: list = legacy.get('entities', {}).get('url', {}).get('urls')
         self.pinned_tweet_ids: list[str] = legacy.get('pinned_tweet_ids_str', [])
         self.is_blue_verified: bool = data.get('is_blue_verified', False)
-        self.verified: bool = legacy.get('verified', False)
+        self.verified: bool = verification.get('verified', legacy.get('verified', False))
         self.possibly_sensitive: bool = legacy.get('possibly_sensitive', False)
         self.default_profile: bool = legacy.get('default_profile', False)
         self.default_profile_image: bool = legacy.get('default_profile_image', False)
@@ -116,7 +119,7 @@ class User:
         self.is_translator: bool = legacy.get('is_translator', False)
         self.translator_type: str = legacy.get('translator_type', '')
         self.withheld_in_countries: list[str] = legacy.get('withheld_in_countries', [])
-        self.protected: bool = legacy.get('protected', False)
+        self.protected: bool = privacy.get('protected', legacy.get('protected', False))
 
     @property
     def created_at_datetime(self) -> datetime:
