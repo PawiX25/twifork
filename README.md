@@ -46,15 +46,38 @@ Fixes included (resolving the corresponding upstream issues):
 
 - **ClientTransaction / `Couldn't get KEY_BYTE indices`** — updated `ondemand.s.js`
   parsing for the new X webpack bundle, so GraphQL requests work again
-  (#408, #409).
+  (#408, #409, #304).
 - **`KeyError` on missing optional fields** in `User.__init__` and
   `Client.request` — defensive `.get()` parsing (#417, #350, #425, #344).
+- **Empty user `name`/`screen_name`** (e.g. in search results) — X moved
+  `name`, `screen_name`, `created_at`, `verified`, `can_dm`, `can_media_tag`,
+  `protected`, location and avatar out of `legacy` into new sub-objects;
+  these are now read with a legacy fallback.
 - **`get_tweet_by_id` `KeyError: 'itemContent'`** — handles both the legacy and
   the new trailing-cursor shapes (#332, #363).
-- **`search_tweet` 404** — refreshed `SearchTimeline` query id and features.
+- **`KeyError: 'entries'` / `IndexError` on `get_user_tweets`** for accounts
+  with no visible tweets — empty/cursor-less timelines return an empty result
+  instead of crashing (#361, #216).
+- **`search_tweet` 404 on the `Latest` product** — the reported 404s trace to a
+  stale `x-client-transaction-id` (same root cause as #408, fixed above), not to
+  `SearchTimeline` itself; its query id and features were nonetheless refreshed to
+  the current ones. A residual semi-random 404 can stick to a `Client` until it is
+  recreated (#357).
 - **`get_trends` deprecated / returns nothing** — rewritten on top of
   `GenericTimelineById`; also adds `get_explore_page()` (#389).
 - **`RecursionError` on rate-limit** — the 429 recovery path no longer recurses.
+- **`GuestClient.activate()` 404** — the guest client now sends a `User-Agent`
+  header and parses user fields defensively (#402, #385).
+- **`get_latest_friends` 404** — routed through the GraphQL `Following`
+  endpoint after the v1.1 endpoint was retired (#397).
+- **`'Client' object has no attribute '_ui_metrix'`** — fixed the captcha
+  unlock path (#333).
+- **`get_bookmark_folders().next()` infinite loop** — fixed malformed
+  pagination variables (#334, #335).
+- **`get_latest_timeline` / `get_list_tweets` dropping conversation entries** —
+  home- and list-conversation entries are now unpacked (#336, #337, #340).
+- **`Media.source_url`** added for the full-resolution image (#376), and
+  **`Tweet.quoted_status_id`** for the quoted tweet id (#222).
 
 Issues that stem from X-side restrictions (account suspension, Cloudflare/IP
 blocks, captcha, automation limits) are not fixable in the library and are out
