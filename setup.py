@@ -29,6 +29,7 @@ setup(
     },
     python_requires='>=3.8',
     description='A maintained fork of twikit — Twitter/X API scraper for Python, no API key required.',
+    keywords='twitter, x, twitter-api, x-api, scraper, twikit, fork, bot, no-api-key, internal-api, async, python',
     long_description=long_description,
     long_description_content_type='text/markdown',
     license='MIT',
