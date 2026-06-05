@@ -1,217 +1,137 @@
-> [!NOTE]
-> https://github.com/d60/twitter_login (under development)
+<p align="center">
+  <img src="assets/banner.png" width="640" alt="twifork">
+</p>
 
-<img src="https://i.imgur.com/iJe6rsZ.png"  width="500">
+<p align="center">
+  A <b>Twitter / X</b> API scraper for Python — <b>no API key required</b>.<br>
+  A maintained fork of <a href="https://github.com/d60/twikit">d60/twikit</a>, fixed for the 2026 breakages that make the upstream release unusable.
+</p>
 
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.8%2B-blue" alt="Python 3.8+">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
+  <img src="https://img.shields.io/github/stars/PawiX25/twifork?style=flat&color=yellow" alt="Stars">
+</p>
 
+> **Drop-in replacement** — the package still imports as `twikit`, so existing code (`from twikit import Client`) keeps working unchanged.
 
-![Number of GitHub stars](https://img.shields.io/github/stars/d60/twikit)
-![GitHub commit activity](https://img.shields.io/github/commit-activity/m/d60/twikit)
-![Version](https://img.shields.io/pypi/v/twikit?label=PyPI)
-[![Tweet](https://img.shields.io/twitter/url/http/shields.io.svg?style=social)](https://twitter.com/intent/tweet?text=Create%20your%20own%20Twitter%20bot%20for%20free%20with%20%22Twikit%22!%20%23python%20%23twitter%20%23twikit%20%23programming%20%23github%20%23bot&url=https%3A%2F%2Fgithub.com%2Fd60%2Ftwikit)
-[![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/nCrByrr8cX)
-[![BuyMeACoffee](https://img.shields.io/badge/-buy_me_a%C2%A0coffee-gray?logo=buy-me-a-coffee)](https://www.buymeacoffee.com/d60py)
+---
 
-[[日本語](https://github.com/d60/twikit/blob/main/README-ja.md)]
-[[中文](https://github.com/d60/twikit/blob/main/README-zh.md)]
+## Install
 
-
-# Twikit <img height="35"  src="https://i.imgur.com/9HSdIl4.png"  valign="bottom">
-
-A Simple Twitter API Scraper
-
-You can use functions such as posting or searching for tweets without an API key using this library.
-
-- [Documentation (English)](https://twikit.readthedocs.io/en/latest/twikit.html)
-
-
-🔵 [Discord](https://discord.gg/nCrByrr8cX)
-
-> [!NOTE]
-> Released twikit_grok an extension for using Grok AI with Twikit.  
-> For more details, visit: https://github.com/d60/twikit_grok.
-
-
-## About this fork
-
-A fork of [d60/twikit](https://github.com/d60/twikit) with fixes for breakages
-that make the upstream PyPI release (`twikit==2.3.3`) unusable as of 2026.
-Install it with:
-
-```
+```bash
 pip install git+https://github.com/PawiX25/twifork.git
 ```
 
-Fixes included (resolving the corresponding upstream issues):
+Optional browser-TLS impersonation (gets past some `403` walls):
 
-- **ClientTransaction / `Couldn't get KEY_BYTE indices`** — updated `ondemand.s.js`
-  parsing for the new X webpack bundle, so GraphQL requests work again
-  (#408, #409, #304).
-- **`KeyError` on missing optional fields** in `User.__init__` and
-  `Client.request` — defensive `.get()` parsing (#417, #350, #425, #344).
-- **Empty user `name`/`screen_name`** (e.g. in search results) — X moved
-  `name`, `screen_name`, `created_at`, `verified`, `can_dm`, `can_media_tag`,
-  `protected`, location and avatar out of `legacy` into new sub-objects;
-  these are now read with a legacy fallback.
-- **`get_tweet_by_id` `KeyError: 'itemContent'`** — handles both the legacy and
-  the new trailing-cursor shapes (#332, #363).
-- **`KeyError: 'entries'` / `IndexError` on `get_user_tweets`** for accounts
-  with no visible tweets — empty/cursor-less timelines return an empty result
-  instead of crashing (#361, #216).
-- **`search_tweet` 404 on the `Latest` product** — the reported 404s trace to a
-  stale `x-client-transaction-id` (same root cause as #408, fixed above), not to
-  `SearchTimeline` itself; its query id and features were nonetheless refreshed to
-  the current ones. A residual semi-random 404 can stick to a `Client` until it is
-  recreated (#357).
-- **`get_trends` deprecated / returns nothing** — rewritten on top of
-  `GenericTimelineById`; also adds `get_explore_page()` (#389).
+```bash
+pip install "twikit[impersonate] @ git+https://github.com/PawiX25/twifork.git"
+```
+
+## Why this fork?
+
+The upstream PyPI release (`twikit==2.3.3`) is broken in several ways as of 2026. **twifork** fixes them — each item links to the upstream issue it resolves:
+
+- **ClientTransaction / `Couldn't get KEY_BYTE indices`** — updated `ondemand.s.js` parsing for the new X webpack bundle, so GraphQL requests work again. ([#408](https://github.com/d60/twikit/issues/408), [#409](https://github.com/d60/twikit/issues/409), [#304](https://github.com/d60/twikit/issues/304))
+- **Intermittent / sticky `404` on `SearchTimeline` and `friends/list`** — the `x-client-transaction-id` animation key was missing X's `frame_time` rounding step, so on some `Client` sessions every strict request 404'd until the client was recreated. Restored, so the semi-random 404s are gone. ([#357](https://github.com/d60/twikit/issues/357), [#397](https://github.com/d60/twikit/issues/397))
+- **`KeyError` on missing optional fields** in `User.__init__` and `Client.request` — defensive `.get()` parsing. ([#417](https://github.com/d60/twikit/issues/417))
+- **Empty user `name` / `screen_name`** (e.g. in search results) — X moved `name`, `screen_name`, `created_at`, avatar, location, and more out of `legacy` into new sub-objects; these are now read with a legacy fallback.
+- **`get_tweet_by_id` `KeyError: 'itemContent'`** — handles both the legacy and the new trailing-cursor shapes. ([#332](https://github.com/d60/twikit/issues/332), [#363](https://github.com/d60/twikit/issues/363))
+- **`KeyError: 'entries'` / `IndexError` on `get_user_tweets`** for accounts with no visible tweets — empty / cursor-less timelines return an empty result instead of crashing. ([#361](https://github.com/d60/twikit/issues/361), [#216](https://github.com/d60/twikit/issues/216))
+- **`get_trends` deprecated / returns nothing** — rebuilt on top of `GenericTimelineById`; also adds `get_explore_page()`. ([#389](https://github.com/d60/twikit/issues/389))
 - **`RecursionError` on rate-limit** — the 429 recovery path no longer recurses.
-- **`GuestClient.activate()` 404** — the guest client now sends a `User-Agent`
-  header and parses user fields defensively (#402, #385).
-- **`get_latest_friends` 404** — routed through the GraphQL `Following`
-  endpoint after the v1.1 endpoint was retired (#397).
-- **`'Client' object has no attribute '_ui_metrix'`** — fixed the captcha
-  unlock path (#333).
-- **`get_bookmark_folders().next()` infinite loop** — fixed malformed
-  pagination variables (#334, #335).
-- **`get_latest_timeline` / `get_list_tweets` dropping conversation entries** —
-  home- and list-conversation entries are now unpacked (#336, #337, #340).
-- **`Media.source_url`** added for the full-resolution image (#376), and
-  **`Tweet.quoted_status_id`** for the quoted tweet id (#222).
+- **`GuestClient.activate()` 404** — the guest client now sends a `User-Agent` header and parses user fields defensively. ([#402](https://github.com/d60/twikit/issues/402), [#385](https://github.com/d60/twikit/issues/385))
+- **`get_latest_friends` 404** — routed through the GraphQL `Following` endpoint after the v1.1 endpoint was retired. ([#397](https://github.com/d60/twikit/issues/397))
+- **`'Client' object has no attribute '_ui_metrix'`** — fixed the captcha unlock path. ([#333](https://github.com/d60/twikit/issues/333))
+- **`get_bookmark_folders().next()` infinite loop** — fixed malformed pagination variables. ([#334](https://github.com/d60/twikit/issues/334), [#335](https://github.com/d60/twikit/issues/335))
+- **`get_latest_timeline` / `get_list_tweets` dropping conversation entries** — home- and list-conversation entries are now unpacked. ([#336](https://github.com/d60/twikit/issues/336), [#337](https://github.com/d60/twikit/issues/337), [#340](https://github.com/d60/twikit/issues/340))
+- **`Media.source_url`** for the full-resolution image ([#376](https://github.com/d60/twikit/issues/376)), and **`Tweet.quoted_status_id`** for the quoted tweet id ([#222](https://github.com/d60/twikit/issues/222)).
 
-Issues that stem from X-side restrictions (account suspension, Cloudflare/IP
-blocks, captcha, automation limits) are not fixable in the library and are out
-of scope.
+Issues that stem from X-side restrictions (account suspension, Cloudflare/IP blocks, captcha, automation limits) aren't fixable in the library and are out of scope.
 
 ### Browser TLS impersonation (optional)
 
-Some X endpoints reject the default `httpx` TLS fingerprint with a `403`
-(HTML) response even when the request is valid. Installing the optional
-`curl_cffi` backend and passing `impersonate=` routes requests through a
-browser TLS fingerprint, which avoids those 403s:
-
-```
-pip install "twikit[impersonate] @ git+https://github.com/PawiX25/twifork.git"
-```
+Some X endpoints reject the default `httpx` TLS fingerprint with a `403` (HTML) response even when the request is valid. Installing the optional `curl_cffi` backend and passing `impersonate=` routes requests through a real browser TLS fingerprint, which avoids those 403s:
 
 ```python
 client = Client('en-US', impersonate='chrome124')
 ```
 
+## Quick start
 
-## Features
-
-### No API Key Required
-
-This library uses scraping and does not require an API key.
-
-### Free
-
-This library is free to use.
-
-
-## Functionality
-
-By using Twikit, you can access functionalities such as the following:
-
--  Create tweets
-
--  Search tweets
-
--  Retrieve trending topics
-
-- etc...
-
-
-
-## Installing
-
-```bash
-
-pip install twikit
-
-```
-
-
-
-## Quick Example
-
-**Define a client and log in to the account.**
+**Define a client and log in.**
 
 ```python
 import asyncio
 from twikit import Client
 
-USERNAME = 'example_user'
-EMAIL = 'email@example.com'
-PASSWORD = 'password0000'
-
-# Initialize client
 client = Client('en-US')
 
 async def main():
     await client.login(
-        auth_info_1=USERNAME,
-        auth_info_2=EMAIL,
-        password=PASSWORD,
+        auth_info_1='example_user',
+        auth_info_2='email@example.com',
+        password='password0000',
         cookies_file='cookies.json'
     )
 
 asyncio.run(main())
 ```
 
-**Create a tweet with media attached.**
+**Post a tweet with media attached.**
 
 ```python
-# Upload media files and obtain media_ids
 media_ids = [
     await client.upload_media('media1.jpg'),
-    await client.upload_media('media2.jpg')
+    await client.upload_media('media2.jpg'),
 ]
-
-# Create a tweet with the provided text and attached media
-await client.create_tweet(
-    text='Example Tweet',
-    media_ids=media_ids
-)
-
+await client.create_tweet(text='Example Tweet', media_ids=media_ids)
 ```
 
-**Search the latest tweets based on a keyword**
+**Search the latest tweets for a keyword.**
+
 ```python
 tweets = await client.search_tweet('python', 'Latest')
-
 for tweet in tweets:
-    print(
-        tweet.user.name,
-        tweet.text,
-        tweet.created_at
-    )
+    print(tweet.user.name, tweet.text, tweet.created_at)
 ```
 
-**Retrieve user tweets**
+**A few more common calls.**
+
 ```python
-tweets = await client.get_user_tweets('123456', 'Tweets')
-
-for tweet in tweets:
-    print(tweet.text)
+await client.get_user_tweets('123456', 'Tweets')   # a user's tweets
+await client.send_dm('123456789', 'Hello')          # send a DM
+await client.get_trends('trending')                 # trending topics
 ```
 
-**Send a dm**
-```python
-await client.send_dm('123456789', 'Hello')
-```
+More examples (upstream, still apply): https://github.com/d60/twikit/tree/main/examples
 
-**Get trends**
-```python
-await client.get_trends('trending')
-```
+## Features
 
-More Examples: [examples](https://github.com/d60/twikit/tree/main/examples) <br>
+- **No API key** — works by scraping the web client.
+- **Free & open source** (MIT).
+- **Drop-in `twikit` replacement** — same import, your code doesn't change.
+- Tweets, search, timelines, trends, users, DMs, media, bookmarks, and more.
+
+## Documentation
+
+Full API reference (upstream — the package surface is the same): https://twikit.readthedocs.io/en/latest/twikit.html
+
+## Community
+
+[![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/nCrByrr8cX)
 
 ## Contributing
 
-If you encounter any bugs or issues, please report them on [issues](https://github.com/d60/twikit/issues).
+Found a bug or have a fix? Open an issue or PR on **[twifork issues](https://github.com/PawiX25/twifork/issues)**.
 
+If twifork saved you a headache, consider leaving a ⭐.
 
-If you find this library useful, consider starring this repository⭐️
+## Credits
+
+twifork is a fork of **[d60/twikit](https://github.com/d60/twikit)** by [@d60](https://github.com/d60) — all upstream credit goes to the original authors. Licensed under the **MIT License**.
+
+## Disclaimer
+
+twifork is an independent, unofficial project. It is **not affiliated with, endorsed by, or sponsored by X Corp.** "X" and "Twitter" are trademarks of X Corp. Use it in accordance with applicable terms and laws.
