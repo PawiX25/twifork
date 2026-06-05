@@ -1,6 +1,6 @@
 import re
 
-from setuptools import setup
+from setuptools import setup, find_packages
 
 with open('README.md', encoding='utf-8') as f:
     long_description = f.read()
@@ -13,6 +13,7 @@ setup(
     name='twifork',
     version=version,
     author='PawiX25',
+    packages=find_packages(include=['twikit', 'twikit.*']),
     install_requires=[
         'httpx[socks]',
         'filetype',
