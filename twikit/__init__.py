@@ -7,7 +7,7 @@ https://github.com/PawiX25/twifork
 A maintained fork of twikit. A Python library for interacting with the Twitter/X API.
 """
 
-__version__ = '2.3.3'
+__version__ = '2.3.4'
 
 import asyncio
 import os

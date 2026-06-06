@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  [English] · [<a href="README-ja.md">日本語</a>] · [<a href="README-zh.md">中文</a>]
+  [English] · [<a href="https://github.com/PawiX25/twifork/blob/main/README-ja.md">日本語</a>] · [<a href="https://github.com/PawiX25/twifork/blob/main/README-zh.md">中文</a>]
 </p>
 
 > **Drop-in replacement** — the package still imports as `twikit`, so existing code (`from twikit import Client`) keeps working unchanged.
