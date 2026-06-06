@@ -14,6 +14,10 @@
   <img src="https://img.shields.io/github/stars/PawiX25/twifork?style=flat&color=yellow" alt="Stars">
 </p>
 
+<p align="center">
+  [English] · [<a href="README-ja.md">日本語</a>] · [<a href="README-zh.md">中文</a>]
+</p>
+
 > **Drop-in replacement** — the package still imports as `twikit`, so existing code (`from twikit import Client`) keeps working unchanged.
 
 ---

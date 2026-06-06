@@ -1,10 +1,10 @@
 """
 ==========================
-Twikit Twitter API Wrapper
+twifork — Twitter/X API Wrapper
 ==========================
 
-https://github.com/d60/twikit
-A Python library for interacting with the Twitter API.
+https://github.com/PawiX25/twifork
+A maintained fork of twikit. A Python library for interacting with the Twitter/X API.
 """
 
 __version__ = '2.3.3'
