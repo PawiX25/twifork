@@ -108,3 +108,17 @@ def raise_exceptions_from_response(errors: list[dict]):
         exception = ERROR_CODE_TO_EXCEPTION.get(code)
         if exception is not None:
             raise exception(error['message'])
+
+
+class ClientTransactionError(TwitterException):
+    """
+    Exception raised when the X-Client-Transaction-Id handshake
+    cannot be completed.
+    """
+
+
+class InvalidSession(ClientTransactionError):
+    """
+    Exception raised when x.com serves the logged-out page shell,
+    which means the cookies are missing, expired or rejected.
+    """

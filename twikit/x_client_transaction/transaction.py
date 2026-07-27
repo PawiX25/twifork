@@ -4,9 +4,12 @@ import math
 import time
 import random
 import base64
+import asyncio
 import hashlib
 from typing import Union, List
 from functools import reduce
+from ..constants import DOMAIN
+from ..errors import AccountLocked, ClientTransactionError, InvalidSession
 from .cubic_curve import Cubic
 from .interpolate import interpolate
 from .rotation import convert_rotation_to_matrix
@@ -23,20 +26,51 @@ class ClientTransaction:
     DEFAULT_KEYWORD = "obfiowerehiring"
     DEFAULT_ROW_INDEX = None
     DEFAULT_KEY_BYTES_INDICES = None
+    # Declared on the class so that a failed handshake surfaces as a clear
+    # ClientTransactionError instead of AttributeError: no attribute 'key'.
+    key = None
+    key_bytes = None
+    animation_key = None
 
     def __init__(self):
         self.home_page_response = None
+        self._inited = False
+        self._init_lock = None
+
+    def is_inited(self) -> bool:
+        """Whether a full handshake has completed successfully."""
+        return self._inited
 
     async def init(self, session, headers):
-        home_page_response = await handle_x_migration(session, headers)
+        # Serialise concurrent callers: without this every in-flight request
+        # runs its own handshake (N requests -> N home page + ondemand.s fetches).
+        if self._init_lock is None:
+            self._init_lock = asyncio.Lock()
+        async with self._init_lock:
+            if self._inited:
+                return
+            home_page_response = self.validate_response(
+                await handle_x_migration(session, headers))
+            # Everything is computed into locals first: partial state must never
+            # be published, otherwise a failure here leaves the object wedged
+            # forever (the caller only re-inits when it sees us uninitialised).
+            # get_animation_key() reads DEFAULT_ROW_INDEX / DEFAULT_KEY_BYTES_INDICES
+            # off self, so those two have to land before it runs. They are
+            # recomputed on every attempt, so a failed run leaves nothing stale.
+            self.DEFAULT_ROW_INDEX, self.DEFAULT_KEY_BYTES_INDICES = await self.get_indices(
+                home_page_response, session, headers)
+            key = self.get_key(response=home_page_response)
+            key_bytes = self.get_key_bytes(key=key)
+            animation_key = self.get_animation_key(
+                key_bytes=key_bytes, response=home_page_response)
 
-        self.home_page_response = self.validate_response(home_page_response)
-        self.DEFAULT_ROW_INDEX, self.DEFAULT_KEY_BYTES_INDICES = await self.get_indices(
-            self.home_page_response, session, headers)
-        self.key = self.get_key(response=self.home_page_response)
-        self.key_bytes = self.get_key_bytes(key=self.key)
-        self.animation_key = self.get_animation_key(
-            key_bytes=self.key_bytes, response=self.home_page_response)
+            # Published last and together: is_inited() is the only gate the
+            # client checks, so nothing here may be visible before it flips.
+            self.home_page_response = home_page_response
+            self.key = key
+            self.key_bytes = key_bytes
+            self.animation_key = animation_key
+            self._inited = True
 
     async def get_indices(self, home_page_response, session, headers):
         key_byte_indices = []
@@ -44,25 +78,57 @@ class ClientTransaction:
             home_page_response) or self.home_page_response
         response_str = str(response)
         on_demand_file = ON_DEMAND_FILE_REGEX.search(response_str)
-        if on_demand_file:
-            on_demand_file_index = on_demand_file.group(1)
-            hash_regex = re.compile(ON_DEMAND_HASH_PATTERN.format(on_demand_file_index))
-            hash_match = hash_regex.search(response_str)
-            if hash_match:
-                filename = hash_match.group(1)
-                on_demand_file_url = f"https://abs.twimg.com/responsive-web/client-web/ondemand.s.{filename}a.js"
-                on_demand_file_response = await session.request(method="GET", url=on_demand_file_url, headers=headers)
-                key_byte_indices_match = INDICES_REGEX.finditer(str(on_demand_file_response.text))
-                for item in key_byte_indices_match:
-                    key_byte_indices.append(item.group(1))
+        if not on_demand_file:
+            # Three unrelated causes used to share one message here, each
+            # needing a different fix: refresh the cookies, deal with the
+            # account, or update the parser. Report which one it is.
+            if "ondemand.s" not in response_str:
+                # A restricted account is bounced to /account/access instead,
+                # which needs a completely different fix from expired cookies
+                # and so must not be reported as an invalid session. Locked and
+                # suspended accounts land on the same redirect, and nothing in
+                # it says which one this is, so the message must not promise
+                # that unlocking will help.
+                if "/account/access" in response_str:
+                    raise AccountLocked(
+                        "x.com redirected to /account/access instead of "
+                        "serving the app, so the X-Client-Transaction-Id "
+                        "handshake cannot be performed. The account is "
+                        f"restricted - open https://{DOMAIN}/account/access "
+                        "in a browser to see whether it is locked or suspended."
+                    )
+                raise InvalidSession(
+                    "x.com returned the logged-out page shell "
+                    f"({len(response_str)} bytes, no webpack manifest), so the "
+                    "X-Client-Transaction-Id handshake cannot be performed. "
+                    "The cookies are most likely missing, expired or rejected "
+                    "- log in again and refresh them."
+                )
+            raise ClientTransactionError(
+                "Couldn't locate the ondemand.s chunk id in the page source "
+                "(the webpack chunk map layout changed)."
+            )
+        on_demand_file_index = on_demand_file.group(1)
+        hash_regex = re.compile(ON_DEMAND_HASH_PATTERN.format(on_demand_file_index))
+        hash_match = hash_regex.search(response_str)
+        if not hash_match:
+            raise ClientTransactionError(
+                f"Couldn't find the ondemand.s hash for chunk id {on_demand_file_index}."
+            )
+        filename = hash_match.group(1)
+        on_demand_file_url = f"https://abs.twimg.com/responsive-web/client-web/ondemand.s.{filename}a.js"
+        on_demand_file_response = await session.request(method="GET", url=on_demand_file_url, headers=headers)
+        key_byte_indices_match = INDICES_REGEX.finditer(str(on_demand_file_response.text))
+        for item in key_byte_indices_match:
+            key_byte_indices.append(item.group(1))
         if not key_byte_indices:
-            raise Exception("Couldn't get KEY_BYTE indices")
+            raise ClientTransactionError("Couldn't get KEY_BYTE indices")
         key_byte_indices = list(map(int, key_byte_indices))
         return key_byte_indices[0], key_byte_indices[1:]
 
     def validate_response(self, response: bs4.BeautifulSoup):
         if not isinstance(response, bs4.BeautifulSoup):
-            raise Exception("invalid response")
+            raise ClientTransactionError("invalid response")
         return response
 
     def get_key(self, response=None):
@@ -70,7 +136,11 @@ class ClientTransaction:
         # <meta name="twitter-site-verification" content="mentU...+1yPz..../IcNS+......./RaF...R+b"/>
         element = response.select_one("[name='twitter-site-verification']")
         if not element:
-            raise Exception("Couldn't get key from the page source")
+            raise InvalidSession(
+                "Couldn't get key from the page source - the "
+                "twitter-site-verification meta tag is missing, which means "
+                "x.com did not serve a logged-in page. Refresh the cookies."
+            )
         return element.get("content")
 
     def get_key_bytes(self, key: str):
