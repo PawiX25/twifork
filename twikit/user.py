@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
-from .utils import timestamp_to_datetime
+from .utils import subobject, timestamp_to_datetime
 
 if TYPE_CHECKING:
     from httpx import Response
@@ -91,14 +91,14 @@ class User:
         legacy = data.get('legacy', {})
         # X moved several profile fields out of `legacy` into top-level objects
         # (core/avatar/location/verification/...); read those first, fall back to legacy.
-        core = data.get('core', {})
-        avatar = data.get('avatar', {})
-        location = data.get('location', {})
-        verification = data.get('verification', {})
-        privacy = data.get('privacy', {})
-        dm_permissions = data.get('dm_permissions', {})
-        media_permissions = data.get('media_permissions', {})
-        profile_bio = data.get('profile_bio', {})
+        core = subobject(data, 'core')
+        avatar = subobject(data, 'avatar')
+        location = subobject(data, 'location')
+        verification = subobject(data, 'verification')
+        privacy = subobject(data, 'privacy')
+        dm_permissions = subobject(data, 'dm_permissions')
+        media_permissions = subobject(data, 'media_permissions')
+        profile_bio = subobject(data, 'profile_bio')
 
         self.id: str = data.get('rest_id', '')
         self.created_at: str = core.get('created_at') or legacy.get('created_at', '')

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
-from ..utils import Result, timestamp_to_datetime
+from ..utils import Result, subobject, timestamp_to_datetime
 
 if TYPE_CHECKING:
     from .client import GuestClient
@@ -83,12 +83,12 @@ class User:
     def __init__(self, client: GuestClient, data: dict) -> None:
         self._client = client
         legacy = data.get('legacy', {})
-        core = data.get('core', {})
-        avatar = data.get('avatar', {})
-        location = data.get('location', {})
-        verification = data.get('verification', {})
-        privacy = data.get('privacy', {})
-        profile_bio = data.get('profile_bio', {})
+        core = subobject(data, 'core')
+        avatar = subobject(data, 'avatar')
+        location = subobject(data, 'location')
+        verification = subobject(data, 'verification')
+        privacy = subobject(data, 'privacy')
+        profile_bio = subobject(data, 'profile_bio')
 
         self.id: str = data.get('rest_id', '')
         self.created_at: str = core.get('created_at') or legacy.get('created_at', '')

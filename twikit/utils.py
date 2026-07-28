@@ -392,3 +392,15 @@ def build_query(text: str, options: SearchOptions) -> str:
         text += ' ?'
 
     return text
+
+
+def subobject(data: dict, key: str) -> dict:
+    """
+    Reads one of the nested profile objects X now sends alongside `legacy`.
+
+    A v1.1 payload keeps `location` as a plain string under that same name,
+    so a value that is not a mapping has to read as absent and let the caller
+    fall back to `legacy`.
+    """
+    value = data.get(key)
+    return value if isinstance(value, dict) else {}
