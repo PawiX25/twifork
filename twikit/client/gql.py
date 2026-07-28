@@ -9,6 +9,7 @@ from ..constants import (
     COMMUNITY_TWEETS_FEATURES,
     FEATURES,
     JOIN_COMMUNITY_FEATURES,
+    CREATE_LIST_FEATURES,
     LIST_FEATURES,
     NOTE_TWEET_FEATURES,
     SEARCH_TIMELINE_FEATURES,
@@ -81,7 +82,7 @@ class Endpoint:
     USER_DM_REACTION_MUTATION_REMOVE_MUTATION = url('bV_Nim3RYHsaJwMkTXJ6ew/useDMReactionMutationRemoveMutation')
     DM_MESSAGE_DELETE_MUTATION = url('BJ6DtxA2llfjnRoRjaiIiw/DMMessageDeleteMutation')
     ADD_PARTICIPANTS_MUTATION = url('oBwyQ0_xVbAQ8FAyG0pCRA/AddParticipantsMutation')
-    CREATE_LIST = url('EYg7JZU3A1eJ-wr2eygPHQ/CreateList')
+    CREATE_LIST = url('sTuzqjTr8MNpVBb9YF04Mg/CreateList')
     EDIT_LIST_BANNER = url('t_DsROHldculsB0B9BUAWw/EditListBanner')
     DELETE_LIST_BANNER = url('Y90WuxdWugtMRJhkXTdvzg/DeleteListBanner')
     UPDATE_LIST = url('dIEI1sbSAuZlxhE0ggrezA/UpdateList')
@@ -537,7 +538,9 @@ class GQLClient:
             'name': name,
             'description': description
         }
-        return await self.gql_post(Endpoint.CREATE_LIST, variables, LIST_FEATURES)
+        return await self.gql_post(
+            Endpoint.CREATE_LIST, variables, CREATE_LIST_FEATURES
+        )
 
     async def edit_list_banner(self, list_id, media_id):
         variables = {

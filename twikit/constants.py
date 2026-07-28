@@ -41,6 +41,18 @@ USER_FEATURES = {
     'responsive_web_graphql_timeline_navigation_enabled': True
 }
 
+CREATE_LIST_FEATURES = {
+    # Captured from the web client on 2026-07-28. The list *management*
+    # operations take this short set; the list *timeline* ones take the long
+    # tweet-timeline set instead. Kept separate from LIST_FEATURES because the
+    # other operations that constant serves still run on their old documents.
+    'profile_label_improvements_pcf_label_in_post_enabled': True,
+    'responsive_web_profile_redirect_enabled': True,
+    'rweb_tipjar_consumption_enabled': False,
+    'verified_phone_label_enabled': False,
+    'responsive_web_graphql_timeline_navigation_enabled': True
+}
+
 LIST_FEATURES = {
     'responsive_web_graphql_exclude_directive_enabled': True,
     'verified_phone_label_enabled': False,
