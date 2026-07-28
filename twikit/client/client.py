@@ -193,9 +193,13 @@ class Client:
         except json.decoder.JSONDecodeError:
             response_data = response.text
 
-        if isinstance(response_data, dict) and 'errors' in response_data:
-            error_code = response_data['errors'][0].get('code')
-            error_message = response_data['errors'][0].get('message')
+        errors = response_data.get('errors') if isinstance(response_data, dict) else None
+        # X returns `"errors": []` during partial outages, and occasionally a
+        # non-dict entry, so the shape has to be checked before indexing it.
+        if errors and isinstance(errors, list):
+            first_error = errors[0] if isinstance(errors[0], dict) else {}
+            error_code = first_error.get('code')
+            error_message = first_error.get('message')
             if error_code in (37, 64):
                 # Account suspended
                 raise AccountSuspended(error_message)
@@ -1627,8 +1631,11 @@ class Client:
         """
         response, _ = await self.gql.tweet_detail(tweet_id, cursor)
 
-        if 'errors' in response:
-            raise TweetNotAvailable(response['errors'][0]['message'])
+        errors = response.get('errors')
+        if errors:
+            raise TweetNotAvailable(
+                errors[0].get('message', 'The tweet is not available.')
+            )
 
         entries = find_dict(response, 'entries', find_one=True)[0]
         reply_to = []
@@ -3243,16 +3250,23 @@ class Client:
         if 'entries' not in response['conversation_timeline']:
             return Result([])
         items = response['conversation_timeline']['entries']
-        
+
         messages = []
         for item in items:
+            # A conversation timeline also carries non-message entries such as
+            # `trust_conversation`, which have no `message` key at all.
+            if 'message' not in item:
+                continue
             message_info = item['message']['message_data']
             messages.append(Message(
                 self,
                 message_info,
                 message_info['sender_id'],
-                message_info['recipient_id']
+                message_info.get('recipient_id')
             ))
+
+        if not messages:
+            return Result([])
 
         return Result(
             messages,
@@ -3370,6 +3384,9 @@ class Client:
                 message_info['sender_id'],
                 group_id
             ))
+
+        if not messages:
+            return Result([])
 
         return Result(
             messages,
@@ -3594,8 +3611,11 @@ class Client:
         >>> await client.remove_list_member('list id', 'user id')
         """
         response, _ = await self.gql.list_remove_member(list_id, user_id)
-        if 'errors' in response:
-            raise TwitterException(response['errors'][0]['message'])
+        errors = response.get('errors')
+        if errors:
+            raise TwitterException(
+                errors[0].get('message', 'Failed to remove the list member.')
+            )
         return List(self, response['data']['list'])
 
     async def get_lists(
@@ -4334,7 +4354,7 @@ class Client:
         url = f'https://api.{DOMAIN}/live_pipeline/events'
         params = {'topics': ','.join(topics)}
         headers = self._base_headers
-        headers.pop('content-type')
+        headers.pop('content-type', None)
 
         async with self.http.stream('GET', url, params=params, headers=headers, timeout=None) as response:
             self._remove_duplicate_ct0_cookie()

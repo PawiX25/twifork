@@ -237,19 +237,19 @@ class Tweet:
     def hashtags(self) -> list[str]:
         note_tweet_results = self._note_tweet_results
         if note_tweet_results:
-            entity_set = note_tweet_results['result']['entity_set']
+            entity_set = note_tweet_results['result'].get('entity_set', {})
             hashtags = entity_set.get('hashtags', [])
         else:
-            hashtags = self._legacy['entities'].get('hashtags', [])
+            hashtags = self._legacy.get('entities', {}).get('hashtags', [])
         return [i['text'] for i in hashtags]
 
     @property
     def urls(self) -> list[str]:
         note_tweet_results = self._note_tweet_results
         if note_tweet_results:
-            entity_set = note_tweet_results['result']['entity_set']
+            entity_set = note_tweet_results['result'].get('entity_set', {})
             return entity_set.get('urls')
-        return self._legacy['entities'].get('urls')
+        return self._legacy.get('entities', {}).get('urls')
 
     @property
     def community_note(self) -> dict | None:
