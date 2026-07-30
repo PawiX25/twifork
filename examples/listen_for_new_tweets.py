@@ -31,7 +31,7 @@ async def main() -> NoReturn:
             before_tweet != latest_tweet and
             before_tweet.created_at_datetime < latest_tweet.created_at_datetime
         ):
-            callable(latest_tweet)
+            callback(latest_tweet)
         before_tweet = latest_tweet
 
 asyncio.run(main())

@@ -2,6 +2,20 @@
 
 **The rate limits reset every 15 minutes.**
 
+\* `create_tweet` has a second, stricter limit that the 15-minute window does
+not describe: a **daily cap of about 50 posts** on a free account. Hitting it
+raises `CouldNotTweet` with
+
+```
+Authorization: You've hit the daily limit. Subscribe to Premium for higher limits. (501)
+```
+
+while the 15-minute counter still reports ~250 requests left, so watching the
+rate-limit headers alone will not warn you. Measured on four fresh accounts:
+each was cut off after **51 posts**, at roughly 70 posts/minute. Reading,
+liking and following keep working - only posting is blocked, until the next
+day or until the account subscribes to Premium.
+
 | Functions                             | Limit | Endpoint                            |
 |---------------------------------------|-------|-------------------------------------|
 | add_members_to_group                  | -     | AddParticipantsMutation             |
@@ -17,7 +31,7 @@
 | create_list                           | -     | CreateList                          |
 | retweet                               | -     | CreateRetweet                       |
 | create_scheduled_tweet                | -     | CreateScheduledTweet                |
-| create_tweet                          | -     | CreateTweet                         |
+| create_tweet                          | 300*  | CreateTweet                         |
 | delete_bookmark                       | -     | DeleteBookmark                      |
 | delete_dm                             | -     | DMMessageDeleteMutation             |
 | delete_list_banner                    | -     | DeleteListBanner                    |
@@ -72,3 +86,13 @@
 | get_user_tweets[tweet_type="Tweets"]  | 50    | UserTweets                          |
 | get_user_tweets[tweet_type="Replies"] | 50    | UserTweetsAndReplies                |
 | vote                                  | -     | capi/passthrough/1                  |
+| create_group                          | -     | dm/new2.json                        |
+| delete_dm_conversation                | -     | dm/conversation/{id}/delete.json    |
+| delete_list                           | -     | DeleteList                          |
+| get_about_account                     | -     | AboutAccountQuery                   |
+| get_blocked_users                     | -     | BlockedAccountsAll                  |
+| get_dm_inbox                          | -     | dm/inbox_initial_state.json         |
+| get_muted_users                       | -     | MutedAccounts                       |
+| get_user_lists                        | -     | CombinedLists                       |
+| get_user_spotlights                   | -     | ProfileSpotlightsQuery              |
+| update_profile                        | -     | account/update_profile.json         |

@@ -161,6 +161,11 @@ Capsolver
 Utils
 -------------------
 
+.. autoclass:: twikit.utils.SearchOptions
+    :members:
+
+.. autofunction:: twikit.utils.build_query
+
 .. autoclass:: twikit.utils.Result
    :members:
    :undoc-members:
