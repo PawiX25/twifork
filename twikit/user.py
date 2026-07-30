@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
@@ -45,7 +46,24 @@ class User:
     is_blue_verified : :class:`bool`
         Indicates if the user is verified with a blue checkmark.
     verified : :class:`bool`
-        Indicates if the user is verified.
+        Indicates if the user has the legacy verified badge.
+    verified_type : :class:`str` | None
+        ``'Business'`` or ``'Government'`` for organisation accounts, None
+        otherwise. Organisations have :attr:`verified` False - the badge they
+        show comes from this field and :attr:`is_blue_verified`.
+    parody_commentary_fan_label : :class:`str` | None
+        ``'Parody'``, ``'Commentary'`` or ``'Fan'`` for accounts X requires to
+        declare themselves as such, None otherwise.
+    automated_label : :class:`str` | None
+        The affiliate label X shows on the profile, ``'Automated'`` for bot
+        accounts, None when there is none.
+    is_automated : :class:`bool`
+        Whether X marks this account as automated.
+    automated_by : :class:`str` | None
+        Screen name of the account that operates this bot, when X names one.
+    notifications_enabled : :class:`bool`
+        Whether the logged in account has notifications turned on for this
+        user.
     possibly_sensitive : :class:`bool`
         Indicates if the user's content may be sensitive.
     can_dm : :class:`bool`
@@ -68,6 +86,16 @@ class User:
         The count of normal followers.
     following_count : :class:`int`
         The count of users the user is following.
+    following : :class:`bool`
+        Whether the logged in account follows this user.
+    followed_by : :class:`bool`
+        Whether this user follows the logged in account.
+    blocking : :class:`bool`
+        Whether the logged in account blocks this user.
+    blocked_by : :class:`bool`
+        Whether this user blocks the logged in account.
+    muting : :class:`bool`
+        Whether the logged in account mutes this user.
     favourites_count : :class:`int`
         The count of favorites or likes.
     listed_count : :class:`int`
@@ -84,6 +112,16 @@ class User:
         The type of profile interstitial.
     withheld_in_countries : list[:class:`str`]
         Countries where the user's content is withheld.
+
+    Note
+    ----
+    X emptied the ``legacy`` block, and these fields have no home in the
+    typed objects that replaced it: ``listed_count``,
+    ``fast_followers_count``, ``normal_followers_count``,
+    ``default_profile``, ``default_profile_image``, ``has_custom_timelines``,
+    ``is_translator`` and ``withheld_in_countries``. They keep their default
+    (0, False, or an empty list) because X no longer sends them at all -
+    the value is not a measurement.
     """
 
     def __init__(self, client: Client, data: dict) -> None:
@@ -93,46 +131,115 @@ class User:
         # (core/avatar/location/verification/...); read those first, fall back to legacy.
         core = subobject(data, 'core')
         avatar = subobject(data, 'avatar')
+        banner = subobject(data, 'banner')
         location = subobject(data, 'location')
         verification = subobject(data, 'verification')
         privacy = subobject(data, 'privacy')
         dm_permissions = subobject(data, 'dm_permissions')
         media_permissions = subobject(data, 'media_permissions')
         profile_bio = subobject(data, 'profile_bio')
+        website = subobject(data, 'website')
+        pinned_items = subobject(data, 'pinned_items')
+        relationship_counts = subobject(data, 'relationship_counts')
+        tweet_counts = subobject(data, 'tweet_counts')
+        action_counts = subobject(data, 'action_counts')
+        profile_metadata = subobject(data, 'profile_metadata')
+        relationship = subobject(data, 'relationship_perspectives')
+        bio_entities = subobject(profile_bio, 'entities')
 
         self.id: str = data.get('rest_id', '')
         self.created_at: str = core.get('created_at') or legacy.get('created_at', '')
         self.name: str = core.get('name') or legacy.get('name', '')
         self.screen_name: str = core.get('screen_name') or legacy.get('screen_name', '')
         self.profile_image_url: str = avatar.get('image_url') or legacy.get('profile_image_url_https', '')
-        self.profile_banner_url: str = legacy.get('profile_banner_url')
-        self.url: str = legacy.get('url')
+        self.profile_banner_url: str = banner.get('image_url') or legacy.get('profile_banner_url')
+        self.url: str = website.get('url') or legacy.get('url')
         self.location: str = location.get('location') or legacy.get('location', '')
         self.description: str = profile_bio.get('description') or legacy.get('description', '')
-        self.description_urls: list = legacy.get('entities', {}).get('description', {}).get('urls', [])
-        self.urls: list = legacy.get('entities', {}).get('url', {}).get('urls')
-        self.pinned_tweet_ids: list[str] = legacy.get('pinned_tweet_ids_str', [])
+        self.description_urls: list = (
+            subobject(bio_entities, 'description').get('urls')
+            or legacy.get('entities', {}).get('description', {}).get('urls', [])
+        )
+        self.urls: list = (
+            subobject(bio_entities, 'url').get('urls')
+            or legacy.get('entities', {}).get('url', {}).get('urls')
+        )
+        self.pinned_tweet_ids: list[str] = (
+            pinned_items.get('tweet_ids_str')
+            or legacy.get('pinned_tweet_ids_str', [])
+        )
         self.is_blue_verified: bool = data.get('is_blue_verified', False)
         self.verified: bool = verification.get('verified', legacy.get('verified', False))
-        self.possibly_sensitive: bool = legacy.get('possibly_sensitive', False)
+        # X split verification into a legacy boolean and a type. Organisations
+        # come back with verified=False and verified_type='Business', which
+        # reads like a bug unless the type is visible too.
+        self.verified_type: str | None = verification.get(
+            'verified_type', legacy.get('verified_type'))
+        # X labels accounts that impersonate or comment on someone else.
+        # Delivered only when the request carries
+        # `profile_label_improvements_pcf_label_in_post_enabled`; X sends the
+        # string 'None' rather than null for an account with no label.
+        label = data.get('parody_commentary_fan_label')
+        self.parody_commentary_fan_label: str | None = (
+            None if label in (None, 'None') else label)
+        # X marks bot accounts with an affiliate label whose long description
+        # names the operator, e.g. "Automated by @billsnitzer". It only comes
+        # back when the request asks for auxiliary user labels, which is why
+        # it looked absent - and it is empty on accounts that carry no label,
+        # so checking a handful of bots proves nothing either way.
+        highlighted = subobject(data, 'affiliates_highlighted_label')
+        label_data = subobject(highlighted, 'label')
+        self.automated_label: str | None = label_data.get('description')
+        self.is_automated: bool = self.automated_label == 'Automated'
+        long_description = subobject(
+            label_data, 'longDescription').get('text') or ''
+        match = re.search(r'Automated by @(\w+)', long_description)
+        self.automated_by: str | None = match.group(1) if match else None
+        self.notifications_enabled: bool = subobject(
+            data, 'notifications_settings').get('notifications_enabled', False)
+        self.possibly_sensitive: bool = data.get(
+            'possibly_sensitive', legacy.get('possibly_sensitive', False))
         self.can_dm: bool = dm_permissions.get('can_dm', legacy.get('can_dm', False))
         self.can_media_tag: bool = media_permissions.get('can_media_tag', legacy.get('can_media_tag', False))
         self.want_retweets: bool = legacy.get('want_retweets', False)
         self.default_profile: bool = legacy.get('default_profile', False)
         self.default_profile_image: bool = legacy.get('default_profile_image', False)
         self.has_custom_timelines: bool = legacy.get('has_custom_timelines', False)
-        self.followers_count: int = legacy.get('followers_count', 0)
+        self.followers_count: int = relationship_counts.get(
+            'followers', legacy.get('followers_count', 0))
         self.fast_followers_count: int = legacy.get('fast_followers_count', 0)
         self.normal_followers_count: int = legacy.get('normal_followers_count', 0)
-        self.following_count: int = legacy.get('friends_count', 0)
-        self.favourites_count: int = legacy.get('favourites_count', 0)
+        self.following_count: int = relationship_counts.get(
+            'following', legacy.get('friends_count', 0))
+        self.favourites_count: int = action_counts.get(
+            'favorites_count', legacy.get('favourites_count', 0))
         self.listed_count: int = legacy.get('listed_count', 0)
-        self.media_count = legacy.get('media_count', 0)
-        self.statuses_count: int = legacy.get('statuses_count', 0)
+        self.media_count = tweet_counts.get(
+            'media_tweets', legacy.get('media_count', 0))
+        self.statuses_count: int = tweet_counts.get(
+            'tweets', legacy.get('statuses_count', 0))
         self.is_translator: bool = legacy.get('is_translator', False)
-        self.translator_type: str = legacy.get('translator_type', '')
+        self.translator_type: str = subobject(
+            data, 'profile_translation'
+        ).get('translator_type', legacy.get('translator_type', ''))
+        self.profile_interstitial_type: str = profile_metadata.get(
+            'profile_interstitial_type', legacy.get('profile_interstitial_type', ''))
         self.withheld_in_countries: list[str] = legacy.get('withheld_in_countries', [])
         self.protected: bool = privacy.get('protected', legacy.get('protected', False))
+        # X moved the viewer's relationship with this account into
+        # relationship_perspectives; the legacy flags are the old home.
+        self.following: bool = relationship.get(
+            'following', legacy.get('following', False))
+        self.followed_by: bool = relationship.get(
+            'followed_by', legacy.get('followed_by', False))
+        self.blocking: bool = relationship.get(
+            'blocking', legacy.get('blocking', False))
+        self.blocked_by: bool = relationship.get(
+            'blocked_by', legacy.get('blocked_by', False))
+        self.muting: bool = relationship.get(
+            'muting', legacy.get('muting', False))
+        self.live_following: bool = relationship.get(
+            'live_following', legacy.get('live_following', False))
 
     @property
     def created_at_datetime(self) -> datetime:

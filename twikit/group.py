@@ -30,14 +30,27 @@ class Group:
         self._client = client
         self.id = group_id
 
-        conversation_timeline = data["conversation_timeline"]
+        conversation_timeline = data.get('conversation_timeline') or {}
+        conversations = conversation_timeline.get('conversations') or {}
+        # A group only gets a `name` once somebody sets one, and the id is
+        # missing from `conversations` entirely until the timeline settles -
+        # indexing either straight through blew up on freshly created groups.
         self.name: str | None = (
-            conversation_timeline["conversations"][group_id]["name"]
-            if len(conversation_timeline["conversations"].keys()) > 0
-            else None
-        )
+            conversations.get(group_id) or {}
+        ).get('name')
 
-        members = conversation_timeline["users"].values()
+        # `users` holds everyone who appeared anywhere in the fetched slice of
+        # the timeline - authors of system log entries, people who already
+        # left. The actual roster is `participants` on the conversation.
+        users = conversation_timeline.get('users') or {}
+        participants = (conversations.get(group_id) or {}).get('participants')
+        if participants:
+            members = [
+                users[p['user_id']] for p in participants
+                if p.get('user_id') in users
+            ]
+        else:
+            members = list(users.values())
         self.members: list[User] = [User(client, build_user_data(i)) for i in members]
 
     async def get_history(

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
-from .utils import timestamp_to_datetime
+from .errors import NotFound
+from .utils import subobject, timestamp_to_datetime
 
 if TYPE_CHECKING:
     from httpx import Response
@@ -51,28 +52,50 @@ class List:
     def __init__(self, client: Client, data: dict) -> None:
         self._client = client
 
+        # X returns an empty object for a list that does not exist, so
+        # indexing straight through raised KeyError('created_at') instead of
+        # something a caller can act on.
+        if not data.get('id_str'):
+            raise NotFound('The list does not exist.')
+
         self.id: str = data['id_str']
-        self.created_at: int = data['created_at']
-        self.default_banner: dict = data['default_banner_media']['media_info']
+        self.created_at: int = data.get('created_at')
+        self.default_banner: dict = subobject(
+            data, 'default_banner_media'
+        ).get('media_info')
 
         if 'custom_banner_media' in data:
             self.banner: dict = data["custom_banner_media"]["media_info"]
         else:
             self.banner: dict = self.default_banner
 
-        self.description: str = data['description']
-        self.following: bool = data['following']
-        self.is_member: bool = data['is_member']
-        self.member_count: bool = data['member_count']
-        self.mode: Literal['Private', 'Public'] = data['mode']
-        self.muting: bool = data['muting']
-        self.name: str = data['name']
-        self.pinning: bool = data['pinning']
-        self.subscriber_count: int = data['subscriber_count']
+        # A list X cannot resolve comes back with an id and nothing else, so
+        # every one of these used to raise a bare KeyError.
+        self.description: str = data.get('description')
+        self.following: bool = data.get('following', False)
+        self.is_member: bool = data.get('is_member', False)
+        self.member_count: int = data.get('member_count', 0)
+        self.mode: Literal['Private', 'Public'] = data.get('mode')
+        self.muting: bool = data.get('muting', False)
+        self.name: str = data.get('name')
+        self.pinning: bool = data.get('pinning', False)
+        self.subscriber_count: int = data.get('subscriber_count', 0)
 
     @property
     def created_at_datetime(self) -> datetime:
-        return timestamp_to_datetime(self.created_at)
+        # Lists carry `created_at` as epoch milliseconds, not the
+        # "Wed Oct 10 20:19:24 +0000 2018" string tweets and users use, so the
+        # shared parser raised TypeError on every list.
+        if self.created_at is None:
+            return None
+        if isinstance(self.created_at, str):
+            return timestamp_to_datetime(self.created_at)
+        # X has shipped this as seconds and as milliseconds at different
+        # times; anything past ~5138 AD in seconds is really milliseconds.
+        seconds = self.created_at
+        if seconds > 100_000_000_000:
+            seconds /= 1000
+        return datetime.fromtimestamp(seconds, tz=timezone.utc)
 
     async def edit_banner(self, media_id: str) -> Response:
         """

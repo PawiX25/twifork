@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from .geo import Place
 from .media import MEDIA_TYPE, _media_from_data
 from .user import User
-from .utils import find_dict, timestamp_to_datetime
+from .utils import find_dict, subobject, timestamp_to_datetime
 
 if TYPE_CHECKING:
     from httpx import Response
@@ -94,7 +94,22 @@ class Tweet:
     urls : :class:`list`
         Information about URLs contained in the tweet.
     full_text : :class:`str` | None
-        The full text of the tweet.
+        The full text of the tweet. For a retweet this is the retweeted
+        tweet's text, because a retweet's own copy is truncated at 140
+        characters - use :attr:`text` for the raw ``RT @user: ...`` form.
+    url : :class:`str`
+        Canonical URL of the tweet on x.com.
+    article : :class:`Article` | None
+        The long-form Article attached to the tweet, if any.
+    conversation_ids : list[:class:`str`] | None
+        IDs of every tweet in the conversation module this tweet arrived in,
+        as X grouped them. None when the tweet did not come from one.
+    source : :class:`str` | None
+        The raw source anchor of the client the tweet was posted from.
+    source_name : :class:`str` | None
+        The client name parsed out of :attr:`source`.
+    source_url : :class:`str` | None
+        The client URL parsed out of :attr:`source`.
     """
 
     def __init__(self, client: Client, data: dict, user: User = None) -> None:
@@ -107,6 +122,7 @@ class Tweet:
         self.reply_to: list[Tweet] | None = None
         self.related_tweets: list[Tweet] | None = None
         self.thread: list[Tweet] | None = None
+        self.conversation_ids: list[str] | None = None
 
     @property
     def id(self) -> str:
@@ -114,15 +130,75 @@ class Tweet:
 
     @property
     def created_at(self) -> str:
-        return self._legacy['created_at']
+        return self._legacy.get('created_at')
 
     @property
     def text(self) -> str:
-        return self._legacy['full_text']
+        # A tweet whose legacy block is trimmed by X used to raise KeyError
+        # here, taking down whole timelines over one bad entry.
+        return self._legacy.get('full_text')
 
     @property
     def lang(self) -> str:
-        return self._legacy['lang']
+        return self._legacy.get('lang')
+
+    @property
+    def url(self) -> str:
+        """
+        The canonical URL of the tweet on x.com.
+
+        Examples
+        --------
+        >>> print(tweet.url)
+        https://x.com/elonmusk/status/1519480761749016577
+        """
+        screen_name = self.user.screen_name if self.user is not None else 'i'
+        return f'https://x.com/{screen_name}/status/{self.id}'
+
+    @property
+    def article(self) -> Article | None:
+        """
+        The long-form Article attached to the tweet, or None.
+
+        A tweet that carries an Article has nothing but the t.co link in
+        :attr:`text`, so the title and lead have to be read from here.
+
+        Note
+        ----
+        X does not ship the article body with the tweet - only the title,
+        the preview text and the cover image are available.
+        """
+        result = subobject(
+            subobject(self._data, 'article'), 'article_results'
+        ).get('result')
+        if not isinstance(result, dict):
+            return None
+        return Article(result)
+
+    @property
+    def source(self) -> str | None:
+        """The raw source anchor, e.g. ``<a href="...">Twitter for iPhone</a>``."""
+        # X keeps `source` on the result itself, not under `legacy` like the
+        # v1.1 payload did, which is why looking in `legacy` finds nothing.
+        return self._data.get('source') or self._legacy.get('source')
+
+    @property
+    def source_name(self) -> str | None:
+        """The client name from :attr:`source`, e.g. ``Twitter for iPhone``."""
+        source = self.source
+        if not source:
+            return None
+        match = re.search(r'>(.*?)</a>', source)
+        return match.group(1) if match else source
+
+    @property
+    def source_url(self) -> str | None:
+        """The client URL from :attr:`source`."""
+        source = self.source
+        if not source:
+            return None
+        match = re.search(r'href=[\'"](.*?)[\'"]', source)
+        return match.group(1) if match else None
 
     @property
     def in_reply_to(self) -> str | None:
@@ -194,6 +270,20 @@ class Tweet:
 
     @property
     def view_count(self) -> int | None:
+        """
+        Number of views, or None.
+
+        Note
+        ----
+        Whether X sends the number is a property of the tweet, not of the call
+        you made. Measured 2026-07 on one id across three endpoints: the count
+        was identical from ``get_user_tweets``, ``get_tweet_by_id`` and
+        ``get_tweets_by_ids``, while an older tweet came back without a count
+        from all three. Two tweets in a single search response can differ.
+        :attr:`view_count_state` says which you got - ``'EnabledWithCount'``
+        when the number is there, ``'Enabled'`` when X withheld it - so read
+        that rather than guessing from None.
+        """
         return self._data.get('views', {}).get('count')
 
     @property
@@ -230,26 +320,37 @@ class Tweet:
     def full_text(self) -> str:
         note_tweet_results = self._note_tweet_results
         if note_tweet_results:
-            return note_tweet_results['result']['text']
+            text = subobject(note_tweet_results, 'result').get('text')
+            if text is not None:
+                return text
+        # A retweet carries its own text hard-truncated at 140 characters
+        # ending in an ellipsis; the untruncated wording only ever exists on
+        # the retweeted tweet, so a property called `full_text` has to reach
+        # for it. Use `text` when the literal "RT @user: ..." form is wanted.
+        retweeted_tweet = self.retweeted_tweet
+        if retweeted_tweet is not None:
+            return retweeted_tweet.full_text
         return self.text
 
     @property
     def hashtags(self) -> list[str]:
         note_tweet_results = self._note_tweet_results
         if note_tweet_results:
-            entity_set = note_tweet_results['result'].get('entity_set', {})
+            entity_set = subobject(
+                note_tweet_results, 'result').get('entity_set') or {}
             hashtags = entity_set.get('hashtags', [])
         else:
-            hashtags = self._legacy.get('entities', {}).get('hashtags', [])
+            hashtags = (self._legacy.get('entities') or {}).get('hashtags', [])
         return [i['text'] for i in hashtags]
 
     @property
     def urls(self) -> list[str]:
         note_tweet_results = self._note_tweet_results
         if note_tweet_results:
-            entity_set = note_tweet_results['result'].get('entity_set', {})
+            entity_set = subobject(
+                note_tweet_results, 'result').get('entity_set') or {}
             return entity_set.get('urls')
-        return self._legacy.get('entities', {}).get('urls')
+        return (self._legacy.get('entities') or {}).get('urls')
 
     @property
     def community_note(self) -> dict | None:
@@ -320,7 +421,14 @@ class Tweet:
 
     @property
     def media(self) -> list[MEDIA_TYPE]:
-        media_data = self._legacy['entities'].get('media', [])
+        # `entities.media` carries only the FIRST attachment and no
+        # video_info; the complete set lives in `extended_entities`. Reading
+        # the wrong one silently returned 1 of 4 photos and left videos
+        # without their variants.
+        entities = self._legacy.get('extended_entities') or {}
+        media_data = entities.get('media')
+        if not media_data:
+            media_data = (self._legacy.get('entities') or {}).get('media', [])
         m = []
         for entry in media_data:
             media_obj = _media_from_data(self._client, entry)
@@ -576,14 +684,21 @@ def tweet_from_data(client: Client, data: dict) -> Tweet:
         return None
     if 'tweet' in tweet_data:
         tweet_data = tweet_data['tweet']
-    if 'core' not in tweet_data:
+    core = tweet_data.get('core')
+    if not isinstance(core, dict):
         return None
-    if 'result' not in tweet_data['core']['user_results']:
+    # A conversation can carry a promoted module whose result is the
+    # advertiser's own User object: it has a `core` holding created_at, name
+    # and screen_name, but no `user_results` at all. Checking only for `core`
+    # and then indexing through it turned that entry into
+    # KeyError: 'user_results' and took down the whole call.
+    user_results = core.get('user_results')
+    if not isinstance(user_results, dict) or 'result' not in user_results:
         return None
     if 'legacy' not in tweet_data:
         return None
 
-    user_data = tweet_data['core']['user_results']['result']
+    user_data = user_results['result']
     return Tweet(client, tweet_data, User(client, user_data))
 
 
@@ -671,33 +786,43 @@ class Poll:
         self.id: str = data['rest_id']
         self.name: str = legacy['name']
 
-        choices_number = int(re.findall(
-            r'poll(\d)choice_text_only', self.name
-        )[0])
+        # Image polls are named poll2choice_image etc., so the text_only
+        # pattern found nothing and indexing [0] raised IndexError.
+        match = re.search(r'poll(\d)choice', self.name or '')
+        choices_number = int(match.group(1)) if match else 0
         choices = []
 
         for i in range(1, choices_number + 1):
-            choice_label = binding_values[f'choice{i}_label']
-            choice_count = binding_values.get(f'choice{i}_count', {})
+            choice_label = binding_values.get(f'choice{i}_label') or {}
+            choice_count = binding_values.get(f'choice{i}_count') or {}
             choices.append({
                 'number': str(i),
-                'label': choice_label['string_value'],
+                'label': choice_label.get('string_value'),
                 'count': choice_count.get('string_value', '0')
             })
 
         self.choices = choices
 
-        self.duration_minutes = int(binding_values['duration_minutes']['string_value'])
-        self.end_datetime_utc: str = binding_values['end_datetime_utc']['string_value']
-        updated = binding_values['last_updated_datetime_utc']['string_value']
-        self.last_updated_datetime_utc: str = updated
+        # A poll that is still open ships neither per-choice counts nor
+        # `last_updated_datetime_utc`, so indexing them made every freshly
+        # posted poll raise KeyError on read.
+        def _binding(key, kind='string_value', default=None):
+            value = binding_values.get(key)
+            if not isinstance(value, dict):
+                return default
+            return value.get(kind, default)
 
-        self.counts_are_final: bool = binding_values['counts_are_final']['boolean_value']
+        duration = _binding('duration_minutes')
+        self.duration_minutes = int(duration) if duration is not None else None
+        self.end_datetime_utc: str | None = _binding('end_datetime_utc')
+        self.last_updated_datetime_utc: str | None = _binding(
+            'last_updated_datetime_utc'
+        )
+        self.counts_are_final: bool = bool(
+            _binding('counts_are_final', 'boolean_value', False)
+        )
 
-        if 'selected_choice' in binding_values:
-            self.selected_choice: str = binding_values['selected_choice']['string_value']
-        else:
-            self.selected_choice = None
+        self.selected_choice: str | None = _binding('selected_choice')
 
     async def vote(self, selected_choice: str) -> Poll:
         """
@@ -705,14 +830,24 @@ class Poll:
         Parameters
         ----------
         selected_choice : :class:`str`
-            The label of the selected choice for the vote.
+            The label of the choice, or its number ('1', '2', ...). X only
+            accepts the number, so a label is translated for you.
         Returns
         -------
         :class:`Poll`
             The Poll object representing the updated poll after voting.
         """
+        # X wants the ordinal ("1", "2", ...), not the label - passing the
+        # label through verbatim, as the signature promised, always came back
+        # as CardModelProviderException. Accept either and translate.
+        choice = str(selected_choice)
+        for entry in self.choices:
+            if entry.get('label') == selected_choice:
+                choice = entry['number']
+                break
+
         return await self._client.vote(
-            selected_choice,
+            choice,
             self.id,
             self.tweet.id,
             self.name
@@ -787,3 +922,46 @@ class CommunityNote:
 
     def __ne__(self, __value: object) -> bool:
         return not self == __value
+
+
+class Article:
+    """
+    Represents a long-form Article attached to a tweet.
+
+    Attributes
+    ----------
+    id : :class:`str`
+        The ID of the article.
+    title : :class:`str` | None
+        The title of the article.
+    preview_text : :class:`str` | None
+        The opening text X shows as a lead.
+    cover_image_url : :class:`str` | None
+        The cover image, if the article has one.
+    published_at : :class:`int` | None
+        Unix timestamp of first publication.
+    modified_at : :class:`int` | None
+        Unix timestamp of the last edit.
+
+    See Also
+    --------
+    .Tweet.article
+    """
+    def __init__(self, data: dict) -> None:
+        self._data = data
+
+        self.id: str = data.get('rest_id')
+        self.title: str | None = data.get('title')
+        self.preview_text: str | None = data.get('preview_text')
+        self.cover_image_url: str | None = subobject(
+            subobject(data, 'cover_media'), 'media_info'
+        ).get('original_img_url')
+        self.published_at: int | None = subobject(
+            data, 'metadata'
+        ).get('first_published_at_secs')
+        self.modified_at: int | None = subobject(
+            data, 'lifecycle_state'
+        ).get('modified_at_secs')
+
+    def __repr__(self) -> str:
+        return f'<Article id="{self.id}" title="{self.title}">'

@@ -4,7 +4,8 @@ from typing import TYPE_CHECKING, Literal, NamedTuple
 
 from .tweet import Tweet
 from .user import User
-from .utils import Result, b64_to_str
+from .errors import NotFound
+from .utils import Result, b64_to_str, subobject
 
 if TYPE_CHECKING:
     from .client.client import Client
@@ -24,25 +25,38 @@ class CommunityRule(NamedTuple):
 class CommunityMember:
     def __init__(self, client: Client, data: dict) -> None:
         self._client = client
+        # A member entry X could not resolve arrives without rest_id.
+        if not data.get('rest_id'):
+            raise NotFound('The community member does not exist.')
         self.id: str = data['rest_id']
 
-        self.community_role: str = data['community_role']
-        self.super_following: bool = data['super_following']
-        self.super_follow_eligible: bool = data['super_follow_eligible']
-        self.super_followed_by: bool = data['super_followed_by']
-        self.smart_blocking: bool = data['smart_blocking']
-        self.is_blue_verified: bool = data['is_blue_verified']
+        self.community_role: str = data.get('community_role')
+        self.super_following: bool = data.get('super_following', False)
+        self.super_follow_eligible: bool = data.get('super_follow_eligible', False)
+        self.super_followed_by: bool = data.get('super_followed_by', False)
+        self.smart_blocking: bool = data.get('smart_blocking', False)
+        self.is_blue_verified: bool = data.get('is_blue_verified', False)
 
-        legacy = data['legacy']
-        self.screen_name: str = legacy['screen_name']
-        self.name: str = legacy['name']
-        self.follow_request_sent: bool = legacy['follow_request_sent']
-        self.protected: bool = legacy['protected']
-        self.following: bool = legacy['following']
-        self.followed_by: bool = legacy['followed_by']
-        self.blocking: bool = legacy['blocking']
-        self.profile_image_url_https: str = legacy['profile_image_url_https']
-        self.verified: bool = legacy['verified']
+        # The current documents drop `legacy` and split the same fields across
+        # typed objects, so both shapes have to be read.
+        legacy = subobject(data, 'legacy')
+        core = subobject(data, 'core')
+        avatar = subobject(data, 'avatar')
+        privacy = subobject(data, 'privacy')
+        verification = subobject(data, 'verification')
+        relationship = subobject(data, 'relationship_perspectives')
+
+        self.screen_name: str = core.get('screen_name') or legacy.get('screen_name')
+        self.name: str = core.get('name') or legacy.get('name')
+        self.follow_request_sent: bool = data.get(
+            'follow_request_sent', legacy.get('follow_request_sent', False))
+        self.protected: bool = privacy.get('protected', legacy.get('protected', False))
+        self.following: bool = relationship.get('following', legacy.get('following', False))
+        self.followed_by: bool = relationship.get('followed_by', legacy.get('followed_by', False))
+        self.blocking: bool = relationship.get('blocking', legacy.get('blocking', False))
+        self.profile_image_url_https: str = (
+            avatar.get('image_url') or legacy.get('profile_image_url_https'))
+        self.verified: bool = verification.get('verified', legacy.get('verified', False))
 
     def __eq__(self, __value: object) -> bool:
         return isinstance(__value, CommunityMember) and self.id == __value.id
@@ -94,14 +108,19 @@ class Community:
 
     def __init__(self, client: Client, data: dict) -> None:
         self._client = client
+        # X answers an unknown community id with an empty result, so this
+        # raised KeyError('rest_id') rather than telling the caller anything.
+        if not data.get('rest_id'):
+            raise NotFound('The community does not exist.')
         self.id: str = data['rest_id']
 
-        self.name: str = data['name']
-        self.member_count: int = data['member_count']
-        self.is_nsfw: bool = data['is_nsfw']
+        self.name: str = data.get('name')
+        self.member_count: int = data.get('member_count', 0)
+        self.is_nsfw: bool = data.get('is_nsfw', False)
 
         self.members_facepile_results: list[str] = [
-            i['result']['legacy']['profile_image_url_https']
+            subobject(i['result'], 'avatar').get('image_url')
+            or subobject(i['result'], 'legacy').get('profile_image_url_https')
             for i in data['members_facepile_results']
         ]
         self.banner: dict = data['default_banner_media']['media_info']
@@ -117,8 +136,11 @@ class Community:
             else:
                 self.creator = CommunityCreator(
                     b64_to_str(creator['id']).removeprefix('User:'),
-                    creator['legacy']['screen_name'],
-                    creator['legacy']['verified']
+                    subobject(creator, 'core').get('screen_name')
+                    or subobject(creator, 'legacy').get('screen_name'),
+                    subobject(creator, 'verification').get(
+                        'verified',
+                        subobject(creator, 'legacy').get('verified', False))
                 )
         else:
             self.creator = None

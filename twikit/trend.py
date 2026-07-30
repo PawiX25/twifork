@@ -23,7 +23,7 @@ class Trend:
     def __init__(self, client: Client, data: dict) -> None:
         self._client = client
 
-        metadata: dict = data['trend_metadata']
+        metadata: dict = data.get('trend_metadata') or {}
         self.name: str = data['name']
         # TODO: parse to int
         self.tweets_count: str | None = metadata.get('meta_description')
