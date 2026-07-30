@@ -19,10 +19,31 @@ class Result(Generic[T]):
     As with a regular list, you can access elements by
     specifying indexes and iterate over elements using a for loop.
 
+    Warning
+    -------
+    Paginate with :func:`next`, not by feeding :attr:`next_cursor` back into
+    the method yourself. X ignores `count` on most endpoints and hands back
+    far more than was asked for - 70 users for a requested 20 is normal - so
+    the surplus is buffered inside this object and served by :func:`next`
+    before the next request goes out. :attr:`next_cursor` already points past
+    that surplus, so calling the method again with it skips every buffered
+    item::
+
+        # keeps everything
+        page = await client.get_user_followers(user_id, 20)
+        while page:
+            page = await page.next()
+
+        # silently drops the ~50 buffered users on each round
+        page = await client.get_user_followers(user_id, 20)
+        page = await client.get_user_followers(
+            user_id, 20, cursor=page.next_cursor)
+
     Attributes
     ----------
     next_cursor : :class:`str`
-        Cursor used to obtain the next result.
+        Cursor used to obtain the next result. Points past any buffered
+        surplus - see the warning above.
     previous_cursor : :class:`str`
         Cursor used to obtain the previous result.
     token : :class:`str`
@@ -37,18 +58,38 @@ class Result(Generic[T]):
         fetch_next_result: Awaitable | None = None,
         next_cursor: str | None = None,
         fetch_previous_result: Awaitable | None = None,
-        previous_cursor: str | None = None
+        previous_cursor: str | None = None,
+        overflow: list[T] | None = None,
+        page_size: int | None = None
     ) -> None:
         self.__results = results
         self.next_cursor = next_cursor
         self.__fetch_next_result = fetch_next_result
         self.previous_cursor = previous_cursor
         self.__fetch_previous_result = fetch_previous_result
+        # Items X sent beyond the requested count. Honouring `count` by simply
+        # dropping them would skip data, because the cursor already points past
+        # everything that arrived, so they are handed out first instead.
+        self.__overflow = overflow or []
+        # How many items the caller asked for, so the surplus is handed back
+        # in pages of that size rather than in one lump.
+        self.__page_size = page_size or len(results) or None
 
     async def next(self) -> Result[T]:
         """
         The next result.
         """
+        if self.__overflow:
+            page, rest = limited(self.__overflow, self.__page_size)
+            return Result(
+                page,
+                self.__fetch_next_result,
+                self.next_cursor,
+                self.__fetch_previous_result,
+                self.previous_cursor,
+                rest,
+                self.__page_size
+            )
         if self.__fetch_next_result is None:
             return Result([])
         return await self.__fetch_next_result()
@@ -165,7 +206,9 @@ def timestamp_to_datetime(timestamp: str) -> datetime:
 def build_tweet_data(raw_data: dict) -> dict:
     return {
         **raw_data,
-        'rest_id': raw_data['id'],
+        # v1.1 sends both; `id` is a number that loses precision the
+        # moment it is re-serialised, `id_str` is the safe one.
+        'rest_id': raw_data.get('id_str') or raw_data['id'],
         'is_translatable': None,
         'views': {},
         'edit_control': {},
@@ -191,7 +234,9 @@ def build_tweet_data(raw_data: dict) -> dict:
 def build_user_data(raw_data: dict) -> dict:
     return {
         **raw_data,
-        'rest_id': raw_data['id'],
+        # v1.1 sends both; `id` is a number that loses precision the
+        # moment it is re-serialised, `id_str` is the safe one.
+        'rest_id': raw_data.get('id_str') or raw_data['id'],
         'is_blue_verified': raw_data.get('ext_is_blue_verified'),
         'legacy': {
             'created_at': raw_data.get('created_at'),
@@ -266,6 +311,7 @@ class SearchOptions(TypedDict):
     hashtags: list[str]
     from_user: str
     to_user: str
+    place: str
     mentioned_users: list[str]
     filters: list[FILTERS]
     exclude_filters: list[FILTERS]
@@ -302,6 +348,10 @@ def build_query(text: str, options: SearchOptions) -> str:
         - to_user: str
             Specify a username. Only tweets sent to this user will
             be included in the search.
+        - place: str
+            Restrict the search to a place, e.g. 'Warsaw'. Note that X has
+            retired the `near:`, `within:` and `geocode:` operators - they
+            return nothing - so this is the only location filter left.
         - mentioned_users: list[str]
             List of usernames. Only tweets mentioning these users will
             be included in the search.
@@ -356,6 +406,9 @@ def build_query(text: str, options: SearchOptions) -> str:
     if to_user := options.get('to_user'):
         text += f' to:{to_user}'
 
+    if place := options.get('place'):
+        text += f' place:"{place}"'
+
     if mentioned_users := options.get('mentioned_users'):
         text += ' ' + ' '.join(
             [f'@{i}' for i in mentioned_users]
@@ -394,6 +447,59 @@ def build_query(text: str, options: SearchOptions) -> str:
     return text
 
 
+def first_dict(data: dict | list, key: str, default=None):
+    """
+    First value `find_dict` matches, or `default` when X omitted the key.
+
+    Indexing ``find_dict(...)[0]`` directly is where nearly every reported
+    "list index out of range" came from: X leaves keys out whenever a
+    timeline is empty, an entry is unavailable or a lookup found nothing.
+    """
+    found = find_dict(data, key, find_one=True)
+    return found[0] if found else default
+
+
+def last_cursor(entries: list) -> str | None:
+    """
+    Cursor value carried by the last timeline entry, or None.
+
+    Empty timelines have no last entry at all, so indexing ``[-1]`` is the
+    other half of the "list index out of range" family.
+    """
+    if not entries:
+        return None
+    content = entries[-1].get('content')
+    if not isinstance(content, dict):
+        return None
+    value = content.get('value')
+    if value is not None:
+        return value
+    item_content = content.get('itemContent')
+    if isinstance(item_content, dict):
+        return item_content.get('value')
+    return None
+
+
+def cursor_at(entries: list, index: int) -> str | None:
+    """
+    Cursor value of the entry at `index`, or None when it is not there.
+
+    Timelines routinely come back shorter than the code expects - an empty
+    page has no entry at -2 at all - so indexing straight through raised
+    IndexError instead of simply meaning "no cursor".
+    """
+    if not entries:
+        return None
+    try:
+        entry = entries[index]
+    except IndexError:
+        return None
+    content = entry.get('content')
+    if not isinstance(content, dict):
+        return None
+    return content.get('value')
+
+
 def subobject(data: dict, key: str) -> dict:
     """
     Reads one of the nested profile objects X now sends alongside `legacy`.
@@ -404,3 +510,53 @@ def subobject(data: dict, key: str) -> dict:
     """
     value = data.get(key)
     return value if isinstance(value, dict) else {}
+
+
+def fatal_errors(response: dict, required: str | None = None) -> list | None:
+    """
+    Returns the errors that actually sank a GraphQL response, or None.
+
+    X answers with `data` and `errors` together: a field buried in the payload
+    can fail to decode while the operation itself went through, and the error
+    entry then carries a `path` pointing at that field. Treating those as
+    failures throws away a perfectly good result, so only errors that left
+    nothing usable behind count.
+
+    Parameters
+    ----------
+    required : :class:`str`, default=None
+        Key the caller needs out of `data`. A refusal often comes back with
+        `data` holding nothing but a shell - measured on bookmark folders:
+        ``{"viewer": {"user_results": {"result": {"__typename": "User"}}}}``
+        next to ``code 37, "User is not authorized to use bookmark
+        collections"``. `data` is truthy there, so without this the error was
+        dropped and the caller reported an empty list instead of a refusal.
+    """
+    if not isinstance(response, dict):
+        return None
+    errors = response.get('errors')
+    if not errors or not isinstance(errors, list):
+        return None
+    # X occasionally sends a non-dict entry, and every caller reads
+    # errors[0]['message'] - normalise here so none of them has to guard.
+    errors = [
+        e if isinstance(e, dict) else {'message': str(e)} for e in errors
+    ]
+    data = response.get('data')
+    if not data:
+        return errors
+    if required is not None and not find_dict(data, required, find_one=True):
+        return errors
+    return None
+
+
+def limited(results: list, count: int):
+    """
+    Splits a page at the requested count.
+
+    Returns the head to hand back now and the tail to keep for `next()`, so a
+    caller that asked for five items gets five without the rest going missing.
+    """
+    if count is None or count <= 0 or len(results) <= count:
+        return results, []
+    return results[:count], results[count:]
