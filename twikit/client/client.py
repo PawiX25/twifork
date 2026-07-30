@@ -3114,7 +3114,9 @@ class Client:
         Parameters
         ----------
         tweet_id : :class:`str`
-            The ID of the tweet to be retweeted.
+            The ID of the tweet to be retweeted. Passing a retweet's own id
+            works, but X resolves it to the tweet being retweeted, so what
+            appears on the timeline is a retweet of that original.
 
         Returns
         -------
@@ -3125,6 +3127,12 @@ class Client:
         --------
         >>> tweet_id = '...'
         >>> await client.retweet(tweet_id)
+
+        Note
+        ----
+        Undo this with the id of the **original** tweet, not the id you
+        passed here and not the id X reports for the retweet it created -
+        see :func:`delete_retweet`.
 
         See Also
         --------
@@ -3140,7 +3148,8 @@ class Client:
         Parameters
         ----------
         tweet_id : :class:`str`
-            The ID of the retweeted tweet to be unretweeted.
+            The ID of the **original** tweet - the one that was retweeted.
+            Not the id of the retweet itself.
 
         Returns
         -------
@@ -3151,6 +3160,19 @@ class Client:
         --------
         >>> tweet_id = '...'
         >>> await client.delete_retweet(tweet_id)
+
+        Warning
+        -------
+        X answers 200 whether or not anything was removed, and the body only
+        echoes the id it was given - so a call that undid nothing looks
+        exactly like one that worked. Measured: unretweeting a tweet that was
+        never retweeted returns the same shape as a real one.
+
+        This bites when the id came from a timeline. A retweet carries its own
+        id, and passing that here silently does nothing; so does the id X
+        reports for the retweet it created. Use ``tweet.retweeted_tweet.id``
+        when the tweet is a retweet, and re-read the timeline if you need to
+        be sure it is gone.
 
         See Also
         --------
