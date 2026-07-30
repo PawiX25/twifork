@@ -23,8 +23,10 @@ class Group:
         The ID of the group.
     name : :class:`str` | None
         The name of the group.
-    members : list[:class:`str`]
-        Member IDs
+    members : list[:class:`.User`]
+        The current participants. X can quietly admit fewer accounts than
+        were asked for when the group was created, so check this rather than
+        assuming everyone made it in.
     """
     def __init__(self, client: Client, group_id: str, data: dict) -> None:
         self._client = client

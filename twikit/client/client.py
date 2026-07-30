@@ -2887,6 +2887,13 @@ class Client:
                             if tweet_object is None:
                                 continue
                             tweet_object.replies = replies
+                            # These leave through a second door, so they need
+                            # the same two things the tweet below gets: the
+                            # module's ids, and the pinned check that stops a
+                            # tweet already injected at the top coming back.
+                            tweet_object.conversation_ids = conversation_ids
+                            if tweet_object.id in pinned_ids:
+                                continue
                             results.append(tweet_object)
                         item = own[-1]
                     else:

@@ -349,8 +349,10 @@ class Tweet:
         if note_tweet_results:
             entity_set = subobject(
                 note_tweet_results, 'result').get('entity_set') or {}
-            return entity_set.get('urls')
-        return (self._legacy.get('entities') or {}).get('urls')
+            return entity_set.get('urls', [])
+        # Matches `hashtags`, which has always returned a list. Handing back
+        # None for "no urls" made every caller guard the same call twice.
+        return (self._legacy.get('entities') or {}).get('urls', []) or []
 
     @property
     def community_note(self) -> dict | None:

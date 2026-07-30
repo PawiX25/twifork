@@ -39,6 +39,13 @@ class Result(Generic[T]):
         page = await client.get_user_followers(
             user_id, 20, cursor=page.next_cursor)
 
+    Stop on the page, not on the cursor. A cursor marks a position, not the
+    promise of more data, and X hands one back on an empty page too - so
+    ``while page.next_cursor`` keeps re-fetching the same empty page forever,
+    while ``while page`` ends as soon as one comes back with nothing in it.
+    (That is deliberate on X's side: it lets you hold the position and poll
+    it later, which is how the notification timeline is meant to be read.)
+
     Attributes
     ----------
     next_cursor : :class:`str`
