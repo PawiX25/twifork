@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import io
 import json
 import os
+import secrets
+import re
 
 import warnings
 from functools import partial
-from typing import Any, AsyncGenerator, Literal
+from typing import Any, AsyncGenerator, Awaitable, Callable, Literal
 from urllib.parse import urlparse
 
 import filetype
@@ -18,11 +21,13 @@ from httpx._utils import URLPattern
 from .._captcha import Capsolver
 from ..bookmark import BookmarkFolder
 from ..community import Community, CommunityMember
-from ..constants import TOKEN, DOMAIN, TIMELINE_IDS
+from ..constants import COOKIE_DOMAINS, TOKEN, DOMAIN, TIMELINE_IDS
 from ..errors import (
     AccountLocked,
     AccountSuspended,
     BadRequest,
+    ClientTransactionError,
+    LoginRetired,
     CouldNotTweet,
     Forbidden,
     InvalidMedia,
@@ -40,7 +45,7 @@ from ..errors import (
 from ..geo import Place, _places_from_response
 from ..group import Group, GroupMessage
 from ..list import List
-from ..message import Message
+from ..message import Conversation, Message
 from ..notification import Notification
 from ..streaming import Payload, StreamingSession, _payload_from_data
 from ..trend import Location, PlaceTrend, PlaceTrends, Trend
@@ -52,14 +57,33 @@ from ..utils import (
     Result,
     build_tweet_data,
     build_user_data,
+    build_query,
+    fatal_errors,
+    limited,
     find_dict,
+    cursor_at,
     find_entry_by_type,
-    httpx_transport_to_url
+    first_dict,
+    last_cursor,
+    httpx_transport_to_url,
+    subobject
 )
 from ..x_client_transaction.utils import handle_x_migration
 from ..x_client_transaction import ClientTransaction
 from .gql import GQLClient
 from .v11 import V11Client
+
+
+class _TransactionSession:
+    """
+    Minimal session the transaction handshake needs, routed through
+    Client._send so impersonate= applies to it too.
+    """
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    async def request(self, method: str = 'GET', url: str = '', **kwargs):
+        return await self._client._send(method, url, **kwargs)
 
 
 class Client:
@@ -127,24 +151,86 @@ class Client:
 
         self.gql = GQLClient(self)
         self.v11 = V11Client(self)
+        # Headers of the most recent response. X reports the remaining budget
+        # on every call, but until now it was only reachable from a 429, which
+        # is exactly one request too late to be useful.
+        self._response_headers: dict | None = None
 
     async def _send(self, method, url, **kwargs) -> Response:
         if self._curl_session is None:
             return await self.http.request(method, url, **kwargs)
         # Route through curl_cffi, sharing the httpx cookie jar both ways so that
         # ct0, auth and cookie persistence keep working unchanged.
-        cookies = dict(self.http.cookies)
-        params = kwargs.get('params')
-        data = kwargs.get('data')
+        #
+        # Everything the caller passed has to be forwarded. Cherry-picking
+        # headers/params/data silently dropped `json=` - which every GraphQL
+        # mutation uses - and `files=`, which carries the media chunks, so with
+        # impersonate= enabled create_tweet posted an empty body and media
+        # uploads failed with "media parameter is missing".
+        forwarded = {
+            key: kwargs[key] for key in (
+                'headers', 'params', 'data', 'json', 'timeout'
+            ) if key in kwargs
+        }
+        files = kwargs.get('files')
+        if files:
+            # curl_cffi has no `files=`; it wants a CurlMime. Translate the
+            # httpx shape {name: (filename, fileobj_or_bytes, content_type)}
+            # so media uploads work under impersonate too.
+            from curl_cffi import CurlMime
+            mime = CurlMime()
+            for name, spec in files.items():
+                if isinstance(spec, (tuple, list)):
+                    filename, payload, *rest = spec
+                    content_type = rest[0] if rest else None
+                else:
+                    filename, payload, content_type = name, spec, None
+                if hasattr(payload, 'read'):
+                    payload = payload.read()
+                mime.addpart(
+                    name=name,
+                    filename=filename,
+                    content_type=content_type,
+                    data=payload
+                )
+            forwarded['multipart'] = mime
+        # curl_cffi spells this allow_redirects and defaults it to True, httpx
+        # calls it follow_redirects and defaults to False. Passing it only when
+        # the caller did left the two transports disagreeing on every other
+        # call, so turning impersonate= on silently started following redirects
+        # - including the /account/access bounce this client checks for.
+        forwarded['allow_redirects'] = kwargs.get('follow_redirects', False)
+        # Handing curl_cffi the whole jar as a flat dict strips the domains and
+        # sends every cookie to whatever host is being called - measured:
+        # auth_token, ct0, kdt and twid all went to abs.twimg.com on the
+        # handshake fetch, and to pbs.twimg.com on media downloads. Send only
+        # what belongs to this host.
+        sent = self._cookies_for(url)
         r = await self._curl_session.request(
             method, url,
-            headers=kwargs.get('headers'),
-            params=params,
-            data=data,
-            cookies=cookies,
+            cookies=sent,
+            **forwarded
         )
-        for k, v in r.cookies.items():
-            self.http.cookies.set(k, v)
+        # `Cookies.items()` looks up each name and raises CookieConflict as soon
+        # as one exists for two hosts - and X sets twid on both api.x.com and
+        # abs.twimg.com during the handshake, so the first v1.1 call after it
+        # killed the client. Walk the jar, which carries the domain with it.
+        #
+        # `r.cookies` is the curl session jar, not this response's Set-Cookie,
+        # so copying it wholesale re-imported a host-scoped duplicate of every
+        # cookie we had just sent - which is what resurrected the previous
+        # account's auth_token after a rotation. Take only what actually
+        # changed.
+        for cookie in r.cookies.jar:
+            if sent.get(cookie.name) == cookie.value:
+                continue
+            self.http.cookies.set(
+                cookie.name, cookie.value, domain=cookie.domain or ''
+            )
+        # Every request supplies its cookies explicitly, so curl's own jar is
+        # not state we need - and leaving it to accumulate lets the two jars
+        # drift and merge conflicting values into one Cookie header.
+        self._curl_session.cookies.clear()
         # curl_cffi already decompressed the body; drop encoding/length headers
         # so httpx doesn't try to decode it a second time.
         resp_headers = {
@@ -178,14 +264,21 @@ class Client:
                 'Referer': f'https://{DOMAIN}',
                 'User-Agent': self._user_agent
             }
-            await self.client_transaction.init(self.http, ct_headers)
-            self.set_cookies(cookies_backup, clear_cookies=True)
+            # The handshake used to go out on raw httpx, so impersonate= did
+            # not cover the very first (and most filtered) request - users set
+            # it to get past Cloudflare and still got 403 here.
+            await self.client_transaction.init(
+                _TransactionSession(self), ct_headers
+            )
+            # Internal restore: must not invalidate the handshake we just did.
+            self._restore_cookies(cookies_backup)
 
         tid = self.client_transaction.generate_transaction_id(method=method, path=urlparse(url).path)
         headers['X-Client-Transaction-Id'] = tid
 
         cookies_backup = self.get_cookies().copy()
         response = await self._send(method, url, headers=headers, **kwargs)
+        self._response_headers = dict(response.headers)
         self._remove_duplicate_ct0_cookie()
 
         try:
@@ -200,8 +293,11 @@ class Client:
             first_error = errors[0] if isinstance(errors[0], dict) else {}
             error_code = first_error.get('code')
             error_message = first_error.get('message')
-            if error_code in (37, 64):
-                # Account suspended
+            # X reuses code 37 for plain authorization refusals - being told
+            # you cannot use bookmark collections is not a suspension - so the
+            # message has to agree before reporting one. Anything else falls
+            # through to the status code, which says Forbidden and means it.
+            if error_code in (37, 64) and 'suspend' in (error_message or '').lower():
                 raise AccountSuspended(error_message)
 
             if error_code == 326:
@@ -213,8 +309,22 @@ class Client:
                     )
                 if auto_unlock:
                     await self.unlock()
-                    self.set_cookies(cookies_backup, clear_cookies=True)
-                    response = await self._send(method, url, **kwargs)
+                    self._restore_cookies(cookies_backup)
+                    # The retry used to go out without headers, so a freshly
+                    # unlocked account still got 401 - the whole unlock path
+                    # was effectively dead. The id also has to be minted
+                    # again: it encodes a timestamp and X enforces the header
+                    # selectively, so replaying the failed attempt's id is
+                    # exactly the stale-id case that answers 404.
+                    headers['X-Client-Transaction-Id'] = (
+                        self.client_transaction.generate_transaction_id(
+                            method=method, path=urlparse(url).path
+                        )
+                    )
+                    response = await self._send(
+                        method, url, headers=headers, **kwargs
+                    )
+                    self._response_headers = dict(response.headers)
                     self._remove_duplicate_ct0_cookie()
                     try:
                         response_data = response.json()
@@ -262,12 +372,20 @@ class Client:
         return await self.request('POST', url, **kwargs)
 
     def _remove_duplicate_ct0_cookie(self) -> None:
-        cookies = {}
-        for cookie in self.http.cookies.jar:
-            if 'ct0' in cookies and cookie.name == 'ct0':
+        # Rebuilding the jar from bare name/value pairs dropped every domain,
+        # and a domain-less cookie is sent to *every* host - auth_token and
+        # ct0 were going to abs.twimg.com on each handshake. Drop only the
+        # surplus ct0 and leave the rest of the jar, attributes included.
+        seen_ct0 = False
+        for cookie in list(self.http.cookies.jar):
+            if cookie.name != 'ct0':
                 continue
-            cookies[cookie.name] = cookie.value
-        self.http.cookies = list(cookies.items())
+            if seen_ct0:
+                self.http.cookies.jar.clear(
+                    cookie.domain, cookie.path, cookie.name
+                )
+            else:
+                seen_ct0 = True
 
     @property
     def proxy(self) -> str:
@@ -293,7 +411,11 @@ class Client:
         :class:`str`
             The CSRF token as a string.
         """
-        return self.http.cookies.get('ct0')
+        # A raw `.get('ct0')` raises CookieConflict the moment two ct0 cookies
+        # exist for different domains - the same failure get_cookies() had.
+        # Walk the jar so this never dies on the one header every write
+        # request needs.
+        return self.get_cookies().get('ct0')
 
     @property
     def _base_headers(self) -> dict[str, str]:
@@ -329,6 +451,7 @@ class Client:
         response, _ = await self.get(f'https://twitter.com/i/js_inst?c_name=ui_metrics') # keep twitter.com here
         return response
 
+    #: Explains why password login cannot work against X as it stands.
     async def login(
         self,
         *,
@@ -584,7 +707,7 @@ class Client:
             if result['errorId'] == 1:
                 continue
 
-            self.set_cookies(cookies_backup, clear_cookies=True)
+            self._restore_cookies(cookies_backup)
             response, html = await self.captcha_solver.confirm_unlock(
                 html.authenticity_token,
                 html.assignment_token,
@@ -597,13 +720,33 @@ class Client:
                     html.assignment_token,
                     ui_metrics=True
                 )
-            finished = (
-                response.next_request is not None and
-                response.next_request.url.path == '/'
-            )
+            # `next_request` is only ever populated by httpx's own redirect
+            # machinery, and the Response synthesised for the curl_cffi
+            # transport never goes through it - so with impersonate= set this
+            # was unconditionally None and the loop could only ever run out of
+            # attempts. Read the redirect target off the header instead, which
+            # both transports carry.
+            location = response.headers.get('location', '')
+            finished = urlparse(location).path in ('/', '/home')
             if finished:
                 return
-        raise Exception('could not unlock the account.')
+        raise TwitterException('Could not unlock the account.')
+
+    def refresh_transaction(self) -> None:
+        """
+        Forces the X-Client-Transaction-Id handshake to run again.
+
+        The keys behind that header come from a webpack bundle X rotates every
+        few days, and a client holds them for its whole life - so a
+        long-running process eventually signs requests with stale keys and X
+        answers sporadic 404s. Calling this is the cheap fix; rebuilding the
+        client also works but throws the cookie jar away with it.
+
+        Examples
+        --------
+        >>> client.refresh_transaction()
+        """
+        self.client_transaction.reset()
 
     def get_cookies(self) -> dict:
         """
@@ -621,7 +764,14 @@ class Client:
         .load_cookies
         .save_cookies
         """
-        return dict(self.http.cookies)
+        # dict(jar) raises CookieConflict as soon as X sets the same name for
+        # two domains - __cf_bm does exactly that - and this is called on
+        # every transaction-id handshake, so the whole client would die on a
+        # duplicate. Walk the jar instead, last value wins.
+        cookies = {}
+        for cookie in self.http.cookies.jar:
+            cookies[cookie.name] = cookie.value
+        return cookies
 
     def save_cookies(self, path: str) -> None:
         """
@@ -647,15 +797,72 @@ class Client:
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(self.get_cookies(), f)
 
-    def set_cookies(self, cookies: dict, clear_cookies: bool = False) -> None:
+    def _cookies_for(self, url: str) -> dict:
+        """Cookies from the jar that belong to this URL's host."""
+        host = urlparse(url).hostname or ''
+        cookies = {}
+        for cookie in self.http.cookies.jar:
+            domain = cookie.domain or ''
+            if not domain:
+                cookies[cookie.name] = cookie.value
+            elif domain.startswith('.'):
+                # Domain cookie: this host and everything under it.
+                base = domain[1:]
+                if host == base or host.endswith('.' + base):
+                    cookies[cookie.name] = cookie.value
+            elif host == domain:
+                # Host-only cookie (RFC 6265): exactly this host, not its
+                # subdomains. Suffix-matching these sent a cookie X scoped to
+                # x.com out to every *.x.com host as well.
+                cookies[cookie.name] = cookie.value
+        return cookies
+
+    def _set_cookie(self, name: str, value: str) -> None:
+        ''':meta private:'''
+        # X answers with Set-Cookie scoped to the exact host, so after a few
+        # calls the jar holds auth_token under x.com, api.x.com, abs.twimg.com
+        # *and* .x.com. Writing only the dotted domain left those host copies
+        # holding the previous account, httpx preferred the more specific one,
+        # and rotating cookies produced 403 code 353 - the old auth_token
+        # travelling with the new ct0. Drop every copy first.
+        for cookie in list(self.http.cookies.jar):
+            if cookie.name == name:
+                self.http.cookies.jar.clear(
+                    cookie.domain, cookie.path, cookie.name
+                )
+        # curl_cffi keeps its own jar, and anything left there is sent again on
+        # the next call - so clearing only the httpx side let the previous
+        # account's cookies come back.
+        if self._curl_session is not None:
+            for cookie in list(self._curl_session.cookies.jar):
+                if cookie.name == name:
+                    self._curl_session.cookies.jar.clear(
+                        cookie.domain, cookie.path, cookie.name
+                    )
+        for domain in COOKIE_DOMAINS:
+            self.http.cookies.set(name, value, domain=domain)
+
+    def _restore_cookies(self, cookies: dict) -> None:
+        ''':meta private:'''
+        self.http.cookies.clear()
+        for key, value in dict(cookies).items():
+            self._set_cookie(key, value)
+
+    def set_cookies(
+        self, cookies: dict | list, clear_cookies: bool = False
+    ) -> None:
         """
         Sets cookies.
         You can skip the login procedure by loading a saved cookies.
 
         Parameters
         ----------
-        cookies : :class:`dict`
-            The cookies to be set as key value pair.
+        cookies : :class:`dict` | :class:`list`
+            The cookies to be set as key value pair. A list of cookie objects
+            as exported by a browser / Playwright / the "EditThisCookie"
+            extension (each item a dict with ``name`` and ``value``) is also
+            accepted, so you can log in once in a real browser and reuse the
+            exported jar directly.
 
         Examples
         --------
@@ -668,9 +875,43 @@ class Client:
         .load_cookies
         .save_cookies
         """
+        # A browser / Playwright export is a list of cookie objects, not the
+        # flat name->value dict this method was written for. Passing that list
+        # straight to dict() below raises "cannot convert dictionary update
+        # sequence element", so normalise it here - login once in a browser,
+        # export the jar, reuse it as-is.
+        if isinstance(cookies, list):
+            cookies = {
+                c['name']: c['value']
+                for c in cookies
+                if isinstance(c, dict) and 'name' in c and 'value' in c
+            }
         if clear_cookies:
             self.http.cookies.clear()
-        self.http.cookies.update(cookies)
+        # Updating from a plain dict produces cookies with no domain, and
+        # httpx sends those to *every* host - the handshake alone would ship
+        # auth_token and ct0 to abs.twimg.com. Pin them to X.
+        for key, value in dict(cookies).items():
+            self._set_cookie(key, value)
+        # Without a ct0, the first write request answers 403 code 353 ("this
+        # request requires a matching csrf cookie and header") - X only
+        # issues one via Set-Cookie *after* that failure. Measured against
+        # live X: a real ct0 is 160 hex chars, but a self-generated one only
+        # clears the check at exactly 32 - longer values that still match
+        # between cookie and header (64, 128, 160) were rejected, so this is
+        # not a pure double-submit check, X validates the shape too.
+        #
+        # Reading the jar with `.get()` raises CookieConflict once X has set
+        # ct0 for more than one host, which it routinely does - the same trap
+        # get_cookies() and _get_csrf_token() were rewritten to avoid.
+        if 'ct0' not in cookies and not self.get_cookies().get('ct0'):
+            self._set_cookie('ct0', secrets.token_hex(16))
+        # user_id() memoises the account, so rotating to another set of cookies
+        # kept answering with the previous account - every call that resolves
+        # "me" silently addressed the wrong user. The transaction keys are tied
+        # to the session that fetched them, so they have to go as well.
+        self._user_id = None
+        self.client_transaction.reset()
 
     def load_cookies(self, path: str) -> None:
         """
@@ -704,6 +945,14 @@ class Client:
         user_id : :class:`str` | None
             The user ID of the account to act as.
             Set to None to clear the delegated account.
+
+        Note
+        ----
+        X only honours delegation on part of its internal API. Endpoints that
+        refuse it answer 403 with code 90, ``Contributor access is not
+        permitted on this endpoint`` - ``client.user()`` is one of them,
+        because it goes through v1.1 account settings. That is X's
+        restriction, not a missing header here.
         """
         self._act_as = user_id
 
@@ -4371,6 +4620,15 @@ class Client:
     ) -> StreamingSession:
         """
         Returns a session for interacting with the streaming API.
+
+        Note
+        ----
+        The streaming connection is the one request that does not go through
+        ``impersonate=``: it stays on plain httpx, because curl_cffi cannot
+        hold the long-lived response open (measured: the same URL times out
+        after 15 s with a partial body). live_pipeline still accepts httpx's
+        fingerprint, so this works - but if X ever starts filtering it the way
+        it filters the v1.1 endpoints, ``impersonate=`` will not help here.
 
         Parameters
         ----------
