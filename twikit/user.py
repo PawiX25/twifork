@@ -115,21 +115,23 @@ class User:
 
     Note
     ----
-    These fields keep their default - 0, False or an empty list - and the
-    default is not a measurement: ``listed_count``, ``fast_followers_count``,
+    Which fields arrive depends on where the user came from, because X serves
+    profiles and timelines from different documents.
+
+    :func:`Client.get_user_by_screen_name` and :func:`Client.get_user_by_id`
+    fill everything, including the nine that exist only in X's ``legacy``
+    block: ``listed_count``, ``fast_followers_count``,
     ``normal_followers_count``, ``default_profile``,
     ``default_profile_image``, ``has_custom_timelines``, ``want_retweets``,
     ``is_translator`` and ``withheld_in_countries``.
 
-    They live in the ``legacy`` block, and the profile document this client
-    asks for returns that block empty; the typed objects that carry
-    everything else have no equivalent for these nine. X has not withdrawn
-    the data - measured on the same account in the same minute, the previous
-    document still answers with ``legacy`` populated
-    (``listed_count`` 97030 for @NASA) - but that document carries none of
-    the typed objects, nor the parody label, nor the notification setting.
-    The two are alternatives, not versions, and this client takes the one
-    with the richer profile.
+    A user reached through a tweet, a timeline or a search comes from a
+    document that has dropped ``legacy`` in favour of typed objects, so those
+    nine keep their default - 0, False or an empty list - and the default is
+    not a measurement. That document is the only one carrying
+    :attr:`parody_commentary_fan_label`, which is therefore absent from the
+    direct profile lookups. Look a user up by name or id when you need the
+    counters; read the label off a user that arrived with a tweet.
     """
 
     def __init__(self, client: Client, data: dict) -> None:

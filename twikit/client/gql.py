@@ -41,13 +41,24 @@ class Endpoint:
     CREATE_TWEET = url('wUgPBh9hEKhMMGlg8uDuFw/CreateTweet')
     CREATE_SCHEDULED_TWEET = url('LCVzRQGxOaGnOnYH01NQXg/CreateScheduledTweet')
     DELETE_TWEET = url('nxpZCY2K-I6QoFHAHeojFQ/DeleteTweet')
-    USER_BY_SCREEN_NAME = url('Gb-d6r0vxPOADdG62OEBpQ/UserByScreenName')
+    # Deliberately NOT the current document. The one the web client uses
+    # (Gb-d6r0vxPOADdG62OEBpQ) returns `legacy` empty, and nine fields live
+    # only there - listed_count, normal_followers_count, has_custom_timelines,
+    # want_retweets, fast_followers_count, default_profile,
+    # default_profile_image, is_translator, withheld_in_countries - with no
+    # equivalent among the typed objects. This one still answers with legacy
+    # populated and covers every field the typed objects carry, so nothing is
+    # lost by using it. The one thing it omits, parody_commentary_fan_label,
+    # still arrives on users embedded in tweets and search results, which use
+    # their own documents.
+    USER_BY_SCREEN_NAME = url('NimuplG1OB7Fd2btCLdBOw/UserByScreenName')
     MUTED_ACCOUNTS = url('dQiMIEnwsQjKtv-7PHMixQ/MutedAccounts')
     BLOCKED_ACCOUNTS = url('5oNXfRkE7HVkDX1Fd1gn3g/BlockedAccountsAll')
     COMBINED_LISTS = url('15lgkbq4YMpgnv3Xf8BlXg/CombinedLists')
     PROFILE_SPOTLIGHTS = url('mzoqrVGwk-YTSGME1dRfXQ/ProfileSpotlightsQuery')
     ABOUT_ACCOUNT = url('TzOG2twZEfhr9KmClvVVqA/AboutAccountQuery')
-    USER_BY_REST_ID = url('xvmVfRLmnr1alc5f2dib0Q/UserByRestId')
+    # Same reasoning as USER_BY_SCREEN_NAME above.
+    USER_BY_REST_ID = url('tD8zKvQzwY3kdx5yz6YmOw/UserByRestId')
     TWEET_DETAIL = url('559hs_YZNV4IgA3Z6zIIuw/TweetDetail')
     TWEET_RESULT_BY_REST_ID = url('LkId5Akr61BS6BmOIcffRg/TweetResultByRestId')
     FETCH_SCHEDULED_TWEETS = url('H2elmT2R9DLhWoo0DZFNkA/FetchScheduledTweets')
