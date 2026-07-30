@@ -119,9 +119,9 @@ class User:
     typed objects that replaced it: ``listed_count``,
     ``fast_followers_count``, ``normal_followers_count``,
     ``default_profile``, ``default_profile_image``, ``has_custom_timelines``,
-    ``is_translator`` and ``withheld_in_countries``. They keep their default
-    (0, False, or an empty list) because X no longer sends them at all -
-    the value is not a measurement.
+    ``want_retweets``, ``is_translator`` and ``withheld_in_countries``. They
+    keep their default (0, False, or an empty list) because X no longer sends
+    them at all - the value is not a measurement.
     """
 
     def __init__(self, client: Client, data: dict) -> None:

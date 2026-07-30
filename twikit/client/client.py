@@ -1250,7 +1250,7 @@ class Client:
             results,
             partial(self.search_tweet, query, product, count, next_cursor) if next_cursor else None,
             next_cursor,
-            partial(self.search_tweet, query, product, count, previous_cursor),
+            partial(self.search_tweet, query, product, count, previous_cursor) if previous_cursor else None,
             previous_cursor,
             overflow=overflow,
             page_size=count
@@ -1420,7 +1420,7 @@ class Client:
             results,
             partial(self.get_user_highlights_tweets, user_id, count, next_cursor) if next_cursor else None,
             next_cursor,
-            partial(self.get_user_highlights_tweets, user_id, count, previous_cursor),
+            partial(self.get_user_highlights_tweets, user_id, count, previous_cursor) if previous_cursor else None,
             previous_cursor,
             overflow=overflow,
             page_size=count
@@ -2572,7 +2572,7 @@ class Client:
             results,
             partial(self._get_tweet_engagements, tweet_id, count, next_cursor, f) if next_cursor else None,
             next_cursor,
-            partial(self._get_tweet_engagements, tweet_id, count, previous_cursor, f),
+            partial(self._get_tweet_engagements, tweet_id, count, previous_cursor, f) if previous_cursor else None,
             previous_cursor,
             overflow=overflow,
             page_size=count
@@ -2909,7 +2909,7 @@ class Client:
             results,
             partial(self.get_user_tweets, user_id, tweet_type, count, next_cursor) if next_cursor else None,
             next_cursor,
-            partial(self.get_user_tweets, user_id, tweet_type, count, previous_cursor),
+            partial(self.get_user_tweets, user_id, tweet_type, count, previous_cursor) if previous_cursor else None,
             previous_cursor,
             overflow=overflow,
             page_size=count
@@ -3803,7 +3803,7 @@ class Client:
             results,
             partial(self._get_user_friendship_2, user_id, screen_name, count, f, next_cursor) if next_cursor else None,
             next_cursor,
-            partial(self._get_user_friendship_2, user_id, screen_name, count, f, previous_cursor),
+            partial(self._get_user_friendship_2, user_id, screen_name, count, f, previous_cursor) if previous_cursor else None,
             previous_cursor,
             overflow=overflow,
             page_size=count
@@ -4095,7 +4095,7 @@ class Client:
             ids,
             partial(self._get_friendship_ids, user_id, screen_name, count, f, next_cursor) if next_cursor else None,
             next_cursor,
-            partial(self._get_friendship_ids, user_id, screen_name, count, f, previous_cursor),
+            partial(self._get_friendship_ids, user_id, screen_name, count, f, previous_cursor) if previous_cursor else None,
             previous_cursor,
             overflow=overflow,
             page_size=count
@@ -5516,7 +5516,7 @@ class Client:
             results,
             partial(self.get_community_tweets, community_id, tweet_type, count, next_cursor) if next_cursor else None,
             next_cursor,
-            partial(self.get_community_tweets, community_id, tweet_type, count, previous_cursor),
+            partial(self.get_community_tweets, community_id, tweet_type, count, previous_cursor) if previous_cursor else None,
             previous_cursor,
             overflow=overflow,
             page_size=count
@@ -5583,7 +5583,7 @@ class Client:
             tweets,
             partial(self.get_communities_timeline, count, next_cursor) if next_cursor else None,
             next_cursor,
-            partial(self.get_communities_timeline, count, previous_cursor),
+            partial(self.get_communities_timeline, count, previous_cursor) if previous_cursor else None,
             previous_cursor,
             overflow=overflow,
             page_size=count
@@ -5770,7 +5770,7 @@ class Client:
             tweets,
             partial(self.search_community_tweet, community_id, query, count, next_cursor) if next_cursor else None,
             next_cursor,
-            partial(self.search_community_tweet, community_id, query, count, previous_cursor),
+            partial(self.search_community_tweet, community_id, query, count, previous_cursor) if previous_cursor else None,
             previous_cursor,
             overflow=overflow,
             page_size=count

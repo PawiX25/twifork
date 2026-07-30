@@ -433,8 +433,8 @@ class GuestClient:
 
         return Result(
             results,
-            partial(self.get_user_highlights_tweets, user_id, count, next_cursor),
+            partial(self.get_user_highlights_tweets, user_id, count, next_cursor) if next_cursor else None,
             next_cursor,
-            partial(self.get_user_highlights_tweets, user_id, count, previous_cursor),
+            partial(self.get_user_highlights_tweets, user_id, count, previous_cursor) if previous_cursor else None,
             previous_cursor
         )
