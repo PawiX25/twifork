@@ -4981,18 +4981,18 @@ class Client:
                 continue
             lists.append(List(self, list_data))
 
-        if not lists:
-            return Result([])
-
         next_cursor = entries[-1].get('content', {}).get('value')
 
-        # X treats `count` as a hint on this endpoint too; trim client-side
-        # and hand the surplus back through next() instead of dropping it.
+        # A page of nothing but suggestion cells is not the end of the
+        # collection, so the cursor has to survive it - dropping it stopped the
+        # walk before the real lists on the next page. But a fetcher must only
+        # be handed out when there is a cursor to advance on: pointing next()
+        # at a None cursor re-requests the first page, forever.
         results, overflow = limited(lists, count)
 
         return Result(
             results,
-            partial(self.get_lists, count, next_cursor),
+            partial(self.get_lists, count, next_cursor) if next_cursor else None,
             next_cursor,
             overflow=overflow,
             page_size=count
