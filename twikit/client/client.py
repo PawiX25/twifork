@@ -428,16 +428,19 @@ class Client:
         # and a domain-less cookie is sent to *every* host - auth_token and
         # ct0 were going to abs.twimg.com on each handshake. Drop only the
         # surplus ct0 and leave the rest of the jar, attributes included.
-        seen_ct0 = False
+        #
+        # "Surplus" means host-scoped: X answers with a ct0 pinned to the
+        # exact host it was talking to, and those are the duplicates worth
+        # losing. Keeping whichever copy happened to come first instead threw
+        # away the .twitter.com one this client writes deliberately, so after
+        # a single response _ui_metrics - which stays on twitter.com - went
+        # out with no CSRF cookie at all.
         for cookie in list(self.http.cookies.jar):
-            if cookie.name != 'ct0':
+            if cookie.name != 'ct0' or cookie.domain in COOKIE_DOMAINS:
                 continue
-            if seen_ct0:
-                self.http.cookies.jar.clear(
-                    cookie.domain, cookie.path, cookie.name
-                )
-            else:
-                seen_ct0 = True
+            self.http.cookies.jar.clear(
+                cookie.domain, cookie.path, cookie.name
+            )
 
     @property
     def proxy(self) -> str:

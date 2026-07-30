@@ -115,13 +115,21 @@ class User:
 
     Note
     ----
-    X emptied the ``legacy`` block, and these fields have no home in the
-    typed objects that replaced it: ``listed_count``,
-    ``fast_followers_count``, ``normal_followers_count``,
-    ``default_profile``, ``default_profile_image``, ``has_custom_timelines``,
-    ``want_retweets``, ``is_translator`` and ``withheld_in_countries``. They
-    keep their default (0, False, or an empty list) because X no longer sends
-    them at all - the value is not a measurement.
+    These fields keep their default - 0, False or an empty list - and the
+    default is not a measurement: ``listed_count``, ``fast_followers_count``,
+    ``normal_followers_count``, ``default_profile``,
+    ``default_profile_image``, ``has_custom_timelines``, ``want_retweets``,
+    ``is_translator`` and ``withheld_in_countries``.
+
+    They live in the ``legacy`` block, and the profile document this client
+    asks for returns that block empty; the typed objects that carry
+    everything else have no equivalent for these nine. X has not withdrawn
+    the data - measured on the same account in the same minute, the previous
+    document still answers with ``legacy`` populated
+    (``listed_count`` 97030 for @NASA) - but that document carries none of
+    the typed objects, nor the parody label, nor the notification setting.
+    The two are alternatives, not versions, and this client takes the one
+    with the richer profile.
     """
 
     def __init__(self, client: Client, data: dict) -> None:
