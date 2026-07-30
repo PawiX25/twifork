@@ -538,6 +538,11 @@ def fatal_errors(response: dict, required: str | None = None) -> list | None:
         next to ``code 37, "User is not authorized to use bookmark
         collections"``. `data` is truthy there, so without this the error was
         dropped and the caller reported an empty list instead of a refusal.
+
+        The key is looked for anywhere in `data`, so pick one that only the
+        successful shape has. A generic name defeats the check: ``rest_id``
+        appears inside the refusal shell above, so asking for that would
+        read the refusal as a success.
     """
     if not isinstance(response, dict):
         return None
