@@ -1248,7 +1248,7 @@ class Client:
 
         return Result(
             results,
-            partial(self.search_tweet, query, product, count, next_cursor),
+            partial(self.search_tweet, query, product, count, next_cursor) if next_cursor else None,
             next_cursor,
             partial(self.search_tweet, query, product, count, previous_cursor),
             previous_cursor,
@@ -1316,7 +1316,7 @@ class Client:
         results, overflow = limited(results, count)
         return Result(
             results,
-            partial(self.search_user, query, count, next_cursor),
+            partial(self.search_user, query, count, next_cursor) if next_cursor else None,
             next_cursor,
             overflow=overflow,
             page_size=count
@@ -1418,7 +1418,7 @@ class Client:
 
         return Result(
             results,
-            partial(self.get_user_highlights_tweets, user_id, count, next_cursor),
+            partial(self.get_user_highlights_tweets, user_id, count, next_cursor) if next_cursor else None,
             next_cursor,
             partial(self.get_user_highlights_tweets, user_id, count, previous_cursor),
             previous_cursor,
@@ -2570,7 +2570,7 @@ class Client:
         results, overflow = limited(results, count)
         return Result(
             results,
-            partial(self._get_tweet_engagements, tweet_id, count, next_cursor, f),
+            partial(self._get_tweet_engagements, tweet_id, count, next_cursor, f) if next_cursor else None,
             next_cursor,
             partial(self._get_tweet_engagements, tweet_id, count, previous_cursor, f),
             previous_cursor,
@@ -2907,7 +2907,7 @@ class Client:
 
         return Result(
             results,
-            partial(self.get_user_tweets, user_id, tweet_type, count, next_cursor),
+            partial(self.get_user_tweets, user_id, tweet_type, count, next_cursor) if next_cursor else None,
             next_cursor,
             partial(self.get_user_tweets, user_id, tweet_type, count, previous_cursor),
             previous_cursor,
@@ -2975,7 +2975,7 @@ class Client:
 
         return Result(
             results,
-            partial(self.get_timeline, count, seen_tweet_ids, next_cursor),
+            partial(self.get_timeline, count, seen_tweet_ids, next_cursor) if next_cursor else None,
             next_cursor,
             overflow=overflow,
             page_size=count
@@ -3049,7 +3049,7 @@ class Client:
 
         return Result(
             results,
-            partial(self.get_latest_timeline, count, seen_tweet_ids, next_cursor),
+            partial(self.get_latest_timeline, count, seen_tweet_ids, next_cursor) if next_cursor else None,
             next_cursor,
             overflow=overflow,
             page_size=count
@@ -3301,7 +3301,7 @@ class Client:
 
         return Result(
             results,
-            partial(self.get_bookmarks, count, next_cursor, folder_id),
+            partial(self.get_bookmarks, count, next_cursor, folder_id) if next_cursor else None,
             next_cursor,
             fetch_previous_result,
             previous_cursor,
@@ -3778,7 +3778,7 @@ class Client:
 
         return Result(
             results,
-            partial(self._get_user_friendship, user_id, count, f, next_cursor),
+            partial(self._get_user_friendship, user_id, count, f, next_cursor) if next_cursor else None,
             next_cursor,
             overflow=overflow,
             page_size=count
@@ -3801,7 +3801,7 @@ class Client:
 
         return Result(
             results,
-            partial(self._get_user_friendship_2, user_id, screen_name, count, f, next_cursor),
+            partial(self._get_user_friendship_2, user_id, screen_name, count, f, next_cursor) if next_cursor else None,
             next_cursor,
             partial(self._get_user_friendship_2, user_id, screen_name, count, f, previous_cursor),
             previous_cursor,
@@ -3932,7 +3932,7 @@ class Client:
 
         return Result(
             results,
-            partial(self.get_user_lists, user_id, count, next_cursor),
+            partial(self.get_user_lists, user_id, count, next_cursor) if next_cursor else None,
             next_cursor,
             overflow=overflow,
             page_size=count
@@ -4093,7 +4093,7 @@ class Client:
         ids, overflow = limited(response['ids'], count)
         return Result(
             ids,
-            partial(self._get_friendship_ids, user_id, screen_name, count, f, next_cursor),
+            partial(self._get_friendship_ids, user_id, screen_name, count, f, next_cursor) if next_cursor else None,
             next_cursor,
             partial(self._get_friendship_ids, user_id, screen_name, count, f, previous_cursor),
             previous_cursor,
@@ -5108,7 +5108,7 @@ class Client:
 
         return Result(
             results,
-            partial(self.get_list_tweets, list_id, count, next_cursor),
+            partial(self.get_list_tweets, list_id, count, next_cursor) if next_cursor else None,
             next_cursor,
             overflow=overflow,
             page_size=count
@@ -5144,7 +5144,7 @@ class Client:
 
         return Result(
             results,
-            partial(self._get_list_users, f, list_id, count, next_cursor),
+            partial(self._get_list_users, f, list_id, count, next_cursor) if next_cursor else None,
             next_cursor,
             overflow=overflow,
             page_size=count
@@ -5256,7 +5256,7 @@ class Client:
         lists, overflow = limited(lists, count)
         return Result(
             lists,
-            partial(self.search_list, query, count, next_cursor),
+            partial(self.search_list, query, count, next_cursor) if next_cursor else None,
             next_cursor,
             overflow=overflow,
             page_size=count
@@ -5365,7 +5365,7 @@ class Client:
 
         return Result(
             results,
-            partial(self.get_notifications, type, count, next_cursor),
+            partial(self.get_notifications, type, count, next_cursor) if next_cursor else None,
             next_cursor,
             overflow=overflow,
             page_size=count
@@ -5514,7 +5514,7 @@ class Client:
 
         return Result(
             results,
-            partial(self.get_community_tweets, community_id, tweet_type, count, next_cursor),
+            partial(self.get_community_tweets, community_id, tweet_type, count, next_cursor) if next_cursor else None,
             next_cursor,
             partial(self.get_community_tweets, community_id, tweet_type, count, previous_cursor),
             previous_cursor,
@@ -5581,7 +5581,7 @@ class Client:
         tweets, overflow = limited(tweets, count)
         return Result(
             tweets,
-            partial(self.get_communities_timeline, count, next_cursor),
+            partial(self.get_communities_timeline, count, next_cursor) if next_cursor else None,
             next_cursor,
             partial(self.get_communities_timeline, count, previous_cursor),
             previous_cursor,
@@ -5768,7 +5768,7 @@ class Client:
         tweets, overflow = limited(tweets, count)
         return Result(
             tweets,
-            partial(self.search_community_tweet, community_id, query, count, next_cursor),
+            partial(self.search_community_tweet, community_id, query, count, next_cursor) if next_cursor else None,
             next_cursor,
             partial(self.search_community_tweet, community_id, query, count, previous_cursor),
             previous_cursor,
