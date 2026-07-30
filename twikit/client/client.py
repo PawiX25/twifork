@@ -280,6 +280,22 @@ class Client:
             request=Request(method, url),
         )
 
+    @property
+    def rate_limit_remaining(self) -> int | None:
+        """
+        Requests left in the current window, from the last response.
+        """
+        value = (self._response_headers or {}).get('x-rate-limit-remaining')
+        return int(value) if value is not None else None
+
+    @property
+    def rate_limit_reset(self) -> int | None:
+        """
+        Unix time at which the current rate limit window resets.
+        """
+        value = (self._response_headers or {}).get('x-rate-limit-reset')
+        return int(value) if value is not None else None
+
     async def request(
         self,
         method: str,
@@ -1076,6 +1092,45 @@ class Client:
         Retrieve detailed information about the authenticated user.
         """
         return await self.get_user_by_id(await self.user_id())
+
+    async def is_logged_in(self) -> bool:
+        """
+        Checks whether the current cookies still authenticate an account.
+
+        Cookies loaded from a file go stale silently - every later call then
+        fails with a different error depending on which endpoint was hit
+        first, which is why this is worth asking directly.
+
+        Returns
+        -------
+        :class:`bool`
+            True if the session is usable, False if it has expired or the
+            account is no longer accessible.
+
+        Examples
+        --------
+        >>> client.load_cookies('cookies.json')
+        >>> if not await client.is_logged_in():
+        ...     await client.login(...)
+
+        Note
+        ----
+        This only reports whether X still accepts the session. A locked or
+        suspended account answers False as well.
+        """
+        try:
+            response, _ = await self.v11.settings()
+        except (Unauthorized, Forbidden, AccountLocked, AccountSuspended,
+                ClientTransactionError):
+            return False
+        except HTTPError:
+            raise
+        # A 200 that is not JSON (a Cloudflare interstitial, most often) comes
+        # back as a bare string, and calling .get on it crashed instead of
+        # reporting "not logged in" the way every other non-2xx case does.
+        if not isinstance(response, dict):
+            return False
+        return bool(response.get('screen_name'))
 
     async def search_tweet(
         self,
@@ -2138,6 +2193,295 @@ class Client:
         tweet.related_tweets = related_tweets
 
         return tweet
+
+    async def update_profile(
+        self,
+        name: str | None = None,
+        description: str | None = None,
+        location: str | None = None,
+        url: str | None = None
+    ) -> User:
+        """
+        Updates the profile of the logged in account.
+
+        Only the arguments that are passed are changed; anything left as
+        ``None`` keeps its current value. Pass an empty string to clear a
+        field.
+
+        Parameters
+        ----------
+        name : :class:`str` | None, default=None
+            The display name, at most 50 characters.
+        description : :class:`str` | None, default=None
+            The bio.
+        location : :class:`str` | None, default=None
+            The location.
+        url : :class:`str` | None, default=None
+            The website shown on the profile.
+
+        Returns
+        -------
+        :class:`User`
+            The updated user.
+
+        Examples
+        --------
+        >>> await client.update_profile(
+        ...     description='Hello world', location='Tokyo'
+        ... )
+        """
+        fields = {
+            'name': name,
+            'description': description,
+            'location': location,
+            'url': url
+        }
+        fields = {k: v for k, v in fields.items() if v is not None}
+        if not fields:
+            raise ValueError('Nothing to update.')
+        if name is not None and len(name) > 50:
+            raise ValueError('`name` must be at most 50 characters.')
+
+        response, _ = await self.v11.update_profile(fields)
+        return User(self, build_user_data(response))
+
+    async def get_about_account(self, screen_name: str) -> dict:
+        """
+        Retrieves the "About this account" panel of a user - the origin
+        details X started showing on profiles.
+
+        Parameters
+        ----------
+        screen_name : :class:`str`
+            The screen name of the user.
+
+        Returns
+        -------
+        dict
+            Keys include ``account_based_in`` (the country X believes the
+            account operates from), ``created_country_accurate``,
+            ``location_accurate``, ``source`` (the platform it signed up on)
+            and ``username_changes`` with a ``count``. The panel is empty for
+            accounts X has nothing to show for.
+
+        Examples
+        --------
+        >>> about = await client.get_about_account('nike')
+        >>> print(about['account_based_in'], about['source'])
+        United States Web
+        """
+        response, _ = await self.gql.about_account(screen_name)
+        result = subobject(
+            subobject(
+                subobject(response.get('data') or {},
+                          'user_result_by_screen_name'),
+                'result'
+            ) or {},
+            'about_profile'
+        )
+        return result
+
+    async def get_user_spotlights(self, screen_name: str) -> list[dict]:
+        """
+        Retrieves the spotlight modules pinned to a profile - the panels
+        professional accounts can show above their timeline.
+
+        Parameters
+        ----------
+        screen_name : :class:`str`
+            The screen name of the user.
+
+        Returns
+        -------
+        list[dict]
+            The spotlight modules, empty for accounts that pin none.
+
+        Examples
+        --------
+        >>> spotlights = await client.get_user_spotlights('nike')
+        """
+        response, _ = await self.gql.profile_spotlights(screen_name)
+        result = subobject(
+            subobject(response.get('data') or {},
+                      'user_result_by_screen_name'),
+            'result'
+        )
+        modules = subobject(result, 'profilemodules').get('v1')
+        return modules if isinstance(modules, list) else []
+
+    async def get_user_mentions(
+        self,
+        screen_name: str,
+        count: int = 20,
+        cursor: str | None = None
+    ) -> Result[Tweet]:
+        """
+        Retrieves tweets mentioning a user.
+
+        Unlike :func:`get_notifications`, this works for any account, not
+        just the logged in one - it is a search, so it only reaches tweets
+        the search index still holds.
+
+        Parameters
+        ----------
+        screen_name : :class:`str`
+            The screen name to look for, with or without a leading ``@``.
+        count : :class:`int`, default=20
+            The number of tweets to retrieve.
+        cursor : :class:`str`, default=None
+            A cursor for pagination.
+
+        Returns
+        -------
+        Result[:class:`Tweet`]
+            Tweets mentioning the user.
+
+        Examples
+        --------
+        >>> mentions = await client.get_user_mentions('elonmusk')
+        >>> for tweet in mentions:
+        ...     print(tweet.text)
+
+        See Also
+        --------
+        .search_tweet
+        .get_notifications
+        """
+        return await self.search_tweet(
+            f'@{screen_name.lstrip("@")}', 'Latest', count, cursor
+        )
+
+    async def search_tweets_by_date(
+        self,
+        query: str,
+        since: str,
+        until: str,
+        product: Literal['Top', 'Latest', 'Media'] = 'Latest',
+        count: int = 20,
+        cursor: str | None = None
+    ) -> Result[Tweet]:
+        """
+        Searches tweets posted within a date range.
+
+        Thin wrapper over :func:`search_tweet` and :func:`build_query` - the
+        operators exist already, but everyone ends up rediscovering them.
+
+        Parameters
+        ----------
+        query : :class:`str`
+            The search text.
+        since : :class:`str`
+            Start date, ``YYYY-MM-DD``, inclusive.
+        until : :class:`str`
+            End date, ``YYYY-MM-DD``, exclusive.
+        product : {'Top', 'Latest', 'Media'}, default='Latest'
+            The search tab.
+        count : :class:`int`, default=20
+            The number of tweets to retrieve.
+        cursor : :class:`str`, default=None
+            A cursor for pagination.
+
+        Returns
+        -------
+        Result[:class:`Tweet`]
+            The matching tweets.
+
+        Examples
+        --------
+        >>> tweets = await client.search_tweets_by_date(
+        ...     'python', '2024-01-01', '2024-02-01'
+        ... )
+
+        See Also
+        --------
+        .search_tweet
+        .build_query
+        """
+        return await self.search_tweet(
+            build_query(query, {'since': since, 'until': until}),
+            product, count, cursor
+        )
+
+    async def get_thread(self, tweet_id: str) -> list[Tweet]:
+        """
+        Retrieves a whole self-thread from any tweet inside it.
+
+        No single call returns the full thread: asking about the head gives
+        the continuation but not the head's own ancestors, and asking about
+        the tail gives the ancestors but no continuation. This stitches
+        `reply_to`, the tweet itself and `thread` together and drops replies
+        written by anybody else, so the result is the author's chain in
+        chronological order regardless of which tweet you started from.
+
+        Parameters
+        ----------
+        tweet_id : :class:`str`
+            The ID of any tweet in the thread.
+
+        Returns
+        -------
+        list[:class:`Tweet`]
+            The thread, oldest first. A tweet that is not part of a thread
+            comes back as a single-element list.
+
+        Examples
+        --------
+        >>> thread = await client.get_thread('0000000000')
+        >>> for tweet in thread:
+        ...     print(tweet.text)
+
+        See Also
+        --------
+        .get_tweet_by_id
+        """
+        tweet = await self.get_tweet_by_id(tweet_id)
+        author_id = tweet.user.id if tweet.user is not None else None
+
+        chain = []
+        seen = set()
+        for part in [tweet.reply_to or [], [tweet], tweet.thread or []]:
+            for item in part:
+                if item.id in seen:
+                    continue
+                item_author = item.user.id if item.user is not None else None
+                if author_id is not None and item_author != author_id:
+                    continue
+                seen.add(item.id)
+                chain.append(item)
+        return chain
+
+    async def get_tweet_by_url(self, url: str) -> Tweet:
+        """
+        Fetches a tweet by its URL.
+
+        Parameters
+        ----------
+        url : :class:`str`
+            The URL of the tweet, e.g.
+            ``https://x.com/elonmusk/status/1519480761749016577``.
+            Query strings, trailing paths such as ``/photo/1`` and the
+            ``twitter.com`` / ``fxtwitter.com`` style hosts are all accepted.
+
+        Returns
+        -------
+        :class:`Tweet`
+            The tweet.
+
+        Examples
+        --------
+        >>> tweet = await client.get_tweet_by_url(
+        ...     'https://x.com/elonmusk/status/1519480761749016577'
+        ... )
+        >>> print(tweet.text)
+
+        See Also
+        --------
+        .get_tweet_by_id
+        """
+        match = re.search(r'/status(?:es)?/(\d+)', url)
+        if match is None:
+            raise ValueError(f'Not a tweet URL: {url!r}')
+        return await self.get_tweet_by_id(match.group(1))
 
     async def get_tweets_by_ids(self, ids: list[str]) -> list[Tweet]:
         """
@@ -3443,6 +3787,135 @@ class Client:
             page_size=count
         )
 
+    async def get_muted_users(
+        self, count: int = 20, cursor: str | None = None
+    ) -> Result[User]:
+        """
+        Retrieves the accounts the logged in user has muted.
+
+        Parameters
+        ----------
+        count : :class:`int`, default=20
+            The number of users to retrieve.
+        cursor : :class:`str`, default=None
+            A cursor for pagination.
+
+        Returns
+        -------
+        Result[:class:`User`]
+            The muted accounts.
+
+        Examples
+        --------
+        >>> for user in await client.get_muted_users():
+        ...     print(user.screen_name)
+
+        See Also
+        --------
+        .mute_user
+        .unmute_user
+        """
+        return await self._get_user_friendship(
+            None, count, lambda _, c, cur: self.gql.muted_accounts(c, cur),
+            cursor
+        )
+
+    async def get_blocked_users(
+        self, count: int = 20, cursor: str | None = None
+    ) -> Result[User]:
+        """
+        Retrieves the accounts the logged in user has blocked.
+
+        Parameters
+        ----------
+        count : :class:`int`, default=20
+            The number of users to retrieve.
+        cursor : :class:`str`, default=None
+            A cursor for pagination.
+
+        Returns
+        -------
+        Result[:class:`User`]
+            The blocked accounts.
+
+        Examples
+        --------
+        >>> for user in await client.get_blocked_users():
+        ...     print(user.screen_name)
+
+        See Also
+        --------
+        .block_user
+        .unblock_user
+        """
+        return await self._get_user_friendship(
+            None, count, lambda _, c, cur: self.gql.blocked_accounts(c, cur),
+            cursor
+        )
+
+    async def get_user_lists(
+        self, user_id: str, count: int = 100, cursor: str | None = None
+    ) -> Result[List]:
+        """
+        Retrieves the lists another user owns or subscribes to.
+
+        :func:`get_lists` only ever reaches the logged in account; this reads
+        anybody's public lists.
+
+        Parameters
+        ----------
+        user_id : :class:`str`
+            The ID of the user.
+        count : :class:`int`, default=100
+            The number of lists to retrieve.
+        cursor : :class:`str`, default=None
+            A cursor for pagination.
+
+        Returns
+        -------
+        Result[:class:`List`]
+            The user's lists.
+
+        Examples
+        --------
+        >>> user = await client.get_user_by_screen_name('elonmusk')
+        >>> for lst in await client.get_user_lists(user.id):
+        ...     print(lst.name)
+
+        See Also
+        --------
+        .get_lists
+        """
+        response, _ = await self.gql.combined_lists(user_id, count, cursor)
+
+        entries_ = find_dict(response, 'entries', find_one=True)
+        if not entries_:
+            return Result([])
+        entries = entries_[0]
+
+        lists = []
+        next_cursor = None
+        for entry in entries:
+            entry_id = entry.get('entryId', '')
+            if entry_id.startswith('cursor-bottom'):
+                next_cursor = entry.get('content', {}).get('value')
+                continue
+            list_data = find_dict(entry, 'list', find_one=True)
+            if list_data:
+                lists.append(List(self, list_data[0]))
+
+        # X treats `count` as a hint on this endpoint too; trim client-side
+        # and hand the surplus back through next() instead of dropping it.
+        results, overflow = limited(lists, count)
+
+        return Result(
+            results,
+            partial(self.get_user_lists, user_id, count, next_cursor),
+            next_cursor,
+            overflow=overflow,
+            page_size=count
+        )
+
     async def get_user_followers(
         self, user_id: str, count: int = 20, cursor: str | None = None
     ) -> Result[User]:
@@ -3909,6 +4382,180 @@ class Client:
             messages[-1].id
         )
 
+    async def get_dm_inbox(
+        self, cursor: str | None = None
+    ) -> Result[Conversation]:
+        """
+        Retrieves the direct message inbox - the list of conversations,
+        not their contents.
+
+        Parameters
+        ----------
+        cursor : :class:`str`, default=None
+            A cursor for pagination.
+
+        Returns
+        -------
+        Result[:class:`Conversation`]
+            The conversations in the inbox.
+
+        Examples
+        --------
+        >>> conversations = await client.get_dm_inbox()
+        >>> for conversation in conversations:
+        ...     print(conversation.id, conversation.participant_ids)
+        ...     messages = await conversation.get_history()
+
+        See Also
+        --------
+        .get_dm_history
+        """
+        if cursor is None:
+            response, _ = await self.v11.dm_inbox(None)
+        else:
+            # inbox_initial_state only ever serves the first page - passing it
+            # a cursor returns the identical conversations, so walking the
+            # inbox that way loops forever. Measured against a four-entry
+            # inbox: page one and "page two" came back with the same four ids.
+            response, _ = await self.v11.dm_inbox_timeline('trusted', cursor)
+        state = response.get('inbox_initial_state') or response.get('user_events') or {}
+
+        conversations = state.get('conversations') or {}
+        my_id = await self.user_id()
+        results = [
+            Conversation(self, data, my_id)
+            for data in conversations.values()
+        ]
+        # X sorts the inbox by recency; conversations arrives as a mapping so
+        # that order is not guaranteed to survive. Sort it back explicitly.
+        #
+        # `sort_timestamp` is the recency X itself orders by. Sorting on
+        # `last_read_event_id` instead ranked by how much the *reader* had
+        # caught up, so a conversation with unread messages - the one that
+        # belongs at the top - sank to the bottom. The ids are snowflakes but
+        # nothing guarantees they parse, and one odd value must not take the
+        # whole inbox down.
+        def _recency(conversation: Conversation) -> int:
+            for key in ('sort_timestamp', 'sort_event_id'):
+                value = conversation._data.get(key)
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    continue
+            return 0
+
+        results.sort(key=_recency, reverse=True)
+
+        # X hands back a cursor on every inbox response, including the last
+        # one, so treating it as "there is more" made next() re-fetch the same
+        # page forever. The end of the inbox is announced by the timelines
+        # instead.
+        timelines = state.get('inbox_timelines') or {}
+        trusted = timelines.get('trusted') or {}
+        at_end = (
+            trusted.get('status') == 'AT_END' if trusted
+            else not timelines
+        )
+
+        # The next page is asked for by max_id, which is the oldest entry of
+        # this one - the top-level `cursor` is not a paging token and X sends
+        # it even on the last response.
+        next_cursor = None if at_end else (
+            trusted.get('min_entry_id') or state.get('min_entry_id')
+        )
+        return Result(
+            results,
+            partial(self.get_dm_inbox, next_cursor) if next_cursor else None,
+            next_cursor
+        )
+
+    async def create_group(
+        self,
+        user_ids: list[str],
+        text: str,
+        media_id: str | None = None
+    ) -> Group:
+        """
+        Creates a group conversation by sending its first message.
+
+        X has no separate "create group" call - a DM addressed to more than
+        one recipient becomes a group. With a single recipient it is just an
+        ordinary one-to-one conversation, so pass at least two ids.
+
+        Parameters
+        ----------
+        user_ids : list[:class:`str`]
+            IDs of the users to put in the group.
+        text : :class:`str`
+            The first message.
+        media_id : :class:`str`, default=None
+            Media to attach to the first message.
+
+        Returns
+        -------
+        :class:`Group`
+            The group that was created.
+
+        Examples
+        --------
+        >>> group = await client.create_group(
+        ...     ['0000000', '1111111'], 'Hello'
+        ... )
+        >>> await group.add_members(['2222222'])
+
+        See Also
+        --------
+        .send_dm_to_group
+        .get_group
+        """
+        if not user_ids:
+            raise ValueError('`user_ids` must not be empty.')
+
+        response, _ = await self.v11.dm_new_group(user_ids, text, media_id)
+
+        conversation_id = None
+        entries = (response.get('entries') or [])
+        for entry in entries:
+            message = entry.get('message')
+            if message:
+                conversation_id = message.get('conversation_id')
+                break
+        if conversation_id is None:
+            conversation_id = next(
+                iter(response.get('conversations') or {}), None
+            )
+        if conversation_id is None:
+            raise TwitterException(
+                'X did not return a conversation for the new group.'
+            )
+
+        return await self.get_group(conversation_id)
+
+    async def delete_dm_conversation(self, conversation_id: str) -> Response:
+        """
+        Deletes a conversation from the logged in account's inbox.
+
+        This only clears it for the caller - the other participants keep
+        their copy, which is how X itself behaves.
+
+        Parameters
+        ----------
+        conversation_id : :class:`str`
+            The ID of the conversation, as found on
+            :attr:`Conversation.id`.
+
+        Returns
+        -------
+        :class:`httpx.Response`
+            Response returned from twitter api.
+
+        See Also
+        --------
+        .get_dm_inbox
+        """
+        _, response = await self.v11.delete_conversation(conversation_id)
+        return response
+
     async def send_dm_to_group(
         self,
         group_id: str,
@@ -4129,6 +4776,22 @@ class Client:
         if list_info is None:
             raise NotFound('The list does not exist.')
         return List(self, list_info)
+
+    async def delete_list(self, list_id: str) -> Response:
+        """
+        Deletes a list.
+
+        Parameters
+        ----------
+        list_id : :class:`str`
+            The ID of the list to delete.
+
+        Examples
+        --------
+        >>> await client.delete_list('list id')
+        """
+        _, response = await self.gql.delete_list(list_id)
+        return response
 
     async def edit_list_banner(self, list_id: str, media_id: str) -> Response:
         """
