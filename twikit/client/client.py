@@ -1099,7 +1099,7 @@ class Client:
         instructions = instructions[0]
 
         if product == 'Media' and cursor is not None:
-            items = find_dict(instructions, 'moduleItems', find_one=True)[0]
+            items = first_dict(instructions, 'moduleItems', [])
         else:
             items_ = find_dict(instructions, 'entries', find_one=True)
             if items_:
@@ -1107,7 +1107,7 @@ class Client:
             else:
                 items = []
             if product == 'Media':
-                if 'items' in items[0]['content']:
+                if items and 'items' in (items[0].get('content') or {}):
                     items = items[0]['content']['items']
                 else:
                     items = []
@@ -1134,19 +1134,35 @@ class Client:
 
         if next_cursor is None:
             if product == 'Media':
-                entries = find_dict(instructions, 'entries', find_one=True)[0]
-                next_cursor = entries[-1]['content']['value']
-                previous_cursor = entries[-2]['content']['value']
+                entries = first_dict(instructions, 'entries', [])
+                next_cursor = last_cursor(entries)
+                previous_cursor = cursor_at(entries, -2)
             else:
-                next_cursor = instructions[-1]['entry']['content']['value']
-                previous_cursor = instructions[-2]['entry']['content']['value']
+                # An instruction without an `entry` key (TerminateTimeline) or
+                # a list shorter than two used to raise KeyError/IndexError
+                # here and take down the whole search, not just pagination.
+                def _entry_cursor(index):
+                    try:
+                        entry = instructions[index].get('entry') or {}
+                    except IndexError:
+                        return None
+                    return (entry.get('content') or {}).get('value')
+
+                next_cursor = _entry_cursor(-1)
+                previous_cursor = _entry_cursor(-2)
+
+        # X treats `count` as a hint on this endpoint too; trim client-side
+        # and hand the surplus back through next() instead of dropping it.
+        results, overflow = limited(results, count)
 
         return Result(
             results,
             partial(self.search_tweet, query, product, count, next_cursor),
             next_cursor,
             partial(self.search_tweet, query, product, count, previous_cursor),
-            previous_cursor
+            previous_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def search_user(
@@ -1192,20 +1208,27 @@ class Client:
         ...
         """
         response, _ = await self.gql.search_timeline(query, 'People', count, cursor)
-        items = find_dict(response, 'entries', find_one=True)[0]
-        next_cursor = items[-1]['content']['value']
+        items = first_dict(response, 'entries', [])
+        next_cursor = last_cursor(items)
 
         results = []
         for item in items:
             if 'itemContent' not in item['content']:
                 continue
-            user_info = find_dict(item, 'result', find_one=True)[0]
+            user_info = first_dict(item, 'result')
+            if user_info is None:
+                # An entry X could not resolve (deleted or restricted user)
+                # arrives without `result`; skip it instead of dying.
+                continue
             results.append(User(self, user_info))
 
+        results, overflow = limited(results, count)
         return Result(
             results,
             partial(self.search_user, query, count, next_cursor),
-            next_cursor
+            next_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def get_similar_tweets(self, tweet_id: str) -> list[Tweet]:
@@ -1280,7 +1303,7 @@ class Client:
         """
         response, _ = await self.gql.user_highlights_tweets(user_id, count, cursor)
 
-        instructions = response['data']['user']['result']['timeline']['timeline']['instructions']
+        instructions = first_dict(response, 'instructions', [])
         instruction = find_entry_by_type(instructions, 'TimelineAddEntries')
         if instruction is None:
             return Result.empty()
@@ -1298,12 +1321,18 @@ class Client:
             elif entryId.startswith('cursor-bottom'):
                 next_cursor = entry['content']['value']
 
+        # X treats `count` as a hint on this endpoint too; trim client-side
+        # and hand the surplus back through next() instead of dropping it.
+        results, overflow = limited(results, count)
+
         return Result(
             results,
             partial(self.get_user_highlights_tweets, user_id, count, next_cursor),
             next_cursor,
             partial(self.get_user_highlights_tweets, user_id, count, previous_cursor),
-            previous_cursor
+            previous_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def upload_media(
@@ -1876,7 +1905,7 @@ class Client:
         self, tweet_id: str, cursor: str
     ) -> Result[Tweet]:
         response, _ = await self.gql.tweet_detail(tweet_id, cursor)
-        entries = find_dict(response, 'entries', find_one=True)[0]
+        entries = first_dict(response, 'entries', [])
 
         results = []
         for entry in entries:
@@ -1913,7 +1942,7 @@ class Client:
         self, tweet_id: str, cursor: str
     ) -> Result[Tweet]:
         response, _ = await self.gql.tweet_detail(tweet_id, cursor)
-        items = find_dict(response, 'moduleItems', find_one=True)[0]
+        items = first_dict(response, 'moduleItems', [])
         results = []
         for item in items:
             if 'tweet' not in item['entryId']:
@@ -2058,7 +2087,7 @@ class Client:
         [<Tweet id="1111111111">, <Tweet id="1111111112">, <Tweet id="111111113">]
         """
         response, _ = await self.gql.tweet_results_by_rest_ids(ids)
-        tweet_results = response['data']['tweetResult']
+        tweet_results = (response.get('data') or {}).get('tweetResult') or []
         results = []
         for tweet_result in tweet_results:
             results.append(tweet_from_data(self, tweet_result))
@@ -2074,7 +2103,7 @@ class Client:
             List of ScheduledTweet objects representing the scheduled tweets.
         """
         response, _ = await self.gql.fetch_scheduled_tweets()
-        tweets = find_dict(response, 'scheduled_tweet_list', find_one=True)[0]
+        tweets = first_dict(response, 'scheduled_tweet_list', [])
         return [ScheduledTweet(self, tweet) for tweet in tweets]
 
     async def delete_scheduled_tweet(self, tweet_id: str) -> Response:
@@ -2107,8 +2136,8 @@ class Client:
         if not items_:
             return Result([])
         items = items_[0]
-        next_cursor = items[-1]['content']['value']
-        previous_cursor = items[-2]['content']['value']
+        next_cursor = last_cursor(items)
+        previous_cursor = cursor_at(items, -2)
 
         results = []
         for item in items:
@@ -2120,12 +2149,15 @@ class Client:
             user_info = user_info_[0]
             results.append(User(self, user_info))
 
+        results, overflow = limited(results, count)
         return Result(
             results,
             partial(self._get_tweet_engagements, tweet_id, count, next_cursor, f),
             next_cursor,
             partial(self._get_tweet_engagements, tweet_id, count, previous_cursor, f),
-            previous_cursor
+            previous_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def get_retweeters(
@@ -2401,8 +2433,8 @@ class Client:
         ...
         """
         response, _ = await self.gql.home_timeline(count, seen_tweet_ids, cursor)
-        items = find_dict(response, 'entries', find_one=True)[0]
-        next_cursor = items[-1]['content']['value']
+        items = first_dict(response, 'entries', [])
+        next_cursor = last_cursor(items)
         results = []
 
         for item in items:
@@ -2413,10 +2445,16 @@ class Client:
                 continue
             results.append(tweet)
 
+        # X ignores `count` on the home timeline too - it kept returning ~28
+        # no matter what was asked for.
+        results, overflow = limited(results, count)
+
         return Result(
             results,
             partial(self.get_timeline, count, seen_tweet_ids, next_cursor),
-            next_cursor
+            next_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def get_latest_timeline(
@@ -2690,9 +2728,9 @@ class Client:
         if not items_:
             return Result([])
         items = items_[0]
-        next_cursor = items[-1]['content']['value']
+        next_cursor = last_cursor(items)
         if folder_id is None:
-            previous_cursor = items[-2]['content']['value']
+            previous_cursor = cursor_at(items, -2)
             fetch_previous_result = partial(self.get_bookmarks, count, previous_cursor, folder_id)
         else:
             previous_cursor = None
@@ -2705,12 +2743,18 @@ class Client:
                 continue
             results.append(tweet)
 
+        # X treats `count` as a hint on this endpoint too; trim client-side
+        # and hand the surplus back through next() instead of dropping it.
+        results, overflow = limited(results, count)
+
         return Result(
             results,
             partial(self.get_bookmarks, count, next_cursor, folder_id),
             next_cursor,
             fetch_previous_result,
-            previous_cursor
+            previous_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def delete_all_bookmarks(self) -> Response:
@@ -2963,7 +3007,7 @@ class Client:
         self,
         category: Literal['trending', 'for-you', 'news', 'sports', 'entertainment'],
         count: int = 20,
-        retry: bool = True,
+        retry: bool | int = True,
         additional_request_params: dict | None = None
     ) -> list[Trend]:
         """
@@ -2980,7 +3024,7 @@ class Client:
             - 'entertainment': Entertainment-related trends.
         count : :class:`int`, default=20
             The number of trends to retrieve.
-        retry : :class:`bool`, default=True
+        retry : :class:`bool` | :class:`int`, default=True
             If no trends are fetched continuously retry to fetch trends.
         additional_request_params : :class:`dict`, default=None
             Parameters to be added on top of the existing trends API
@@ -3007,26 +3051,48 @@ class Client:
         if timeline_id is None:
             return []
 
-        response, _ = await self.gql.generic_timeline_by_id(timeline_id, count)
-        entry_id_prefix = "trend"
+        response, _ = await self.gql.generic_timeline_by_id(
+            timeline_id, count, additional_request_params
+        )
+        # The News / Sports / Entertainment tabs no longer put trends at the
+        # top level: X wraps them in a `stories-*` module, so filtering on the
+        # `trend-` prefix alone found nothing and those categories always came
+        # back empty. Collect both shapes.
+        item_contents = []
+        for entry in first_dict(response, 'entries', []):
+            entry_id = entry.get('entryId', '')
+            content = entry.get('content') or {}
+            if entry_id.startswith('trend'):
+                item_contents.append(content.get('itemContent'))
+            elif entry_id.startswith('stories'):
+                for item in content.get('items') or []:
+                    item_contents.append(
+                        (item.get('item') or {}).get('itemContent')
+                    )
         entries = [
-            i for i in find_dict(response, 'entries', find_one=True)[0]
-            if i['entryId'].startswith(entry_id_prefix)
+            i for i in item_contents
+            if i and i.get('itemType') == 'TimelineTrend'
         ]
         if not entries:
             if not retry:
                 return []
-            # Recall the method again, as the trend information
-            # may not be returned due to a Twitter error.
-            return await self.get_trends(category, count, retry, additional_request_params)
+            # Retrying passed `retry` through unchanged, so a category that
+            # never yields trends recursed until X rate-limited the account -
+            # a single call could burn hundreds of requests, which is what
+            # made this look like "get_trends never returns". Count down.
+            attempts_left = (retry - 1) if isinstance(retry, int) and retry is not True else 2
+            if attempts_left <= 0:
+                return []
+            # A Twitter hiccup can drop the trend entries; give it a couple of
+            # tries, then accept that the category has nothing to show.
+            return await self.get_trends(
+                category, count, attempts_left, additional_request_params
+            )
 
-        results = []
-        for entry in entries:
-            item_content = entry['content'].get('itemContent')
-            if not item_content or item_content.get('itemType') != 'TimelineTrend':
-                continue
-            results.append(Trend(self, item_content))
-        return results
+        # Trends have no cursor, so honouring `count` here is a plain trim -
+        # X hands back 30 regardless of what was requested.
+        trends = [Trend(self, item_content) for item_content in entries]
+        return trends[:count] if count and count > 0 else trends
 
     async def get_explore_page(self) -> list[Trend]:
         """
@@ -3045,7 +3111,7 @@ class Client:
         <Trend name="...">
         """
         response, _ = await self.gql.explore_page()
-        entries = find_dict(response, 'entries', find_one=True)[0]
+        entries = first_dict(response, 'entries', [])
         results = []
         for entry in entries:
             item_content = entry['content'].get('itemContent')
@@ -3130,12 +3196,16 @@ class Client:
         previous_cursor = response['previous_cursor']
         next_cursor = response['next_cursor']
 
+        results, overflow = limited(results, count)
+
         return Result(
             results,
             partial(self._get_user_friendship_2, user_id, screen_name, count, f, next_cursor),
             next_cursor,
             partial(self._get_user_friendship_2, user_id, screen_name, count, f, previous_cursor),
-            previous_cursor
+            previous_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def get_user_followers(
@@ -3290,12 +3360,15 @@ class Client:
         previous_cursor = response['previous_cursor']
         next_cursor = response['next_cursor']
 
+        ids, overflow = limited(response['ids'], count)
         return Result(
-            response['ids'],
+            ids,
             partial(self._get_friendship_ids, user_id, screen_name, count, f, next_cursor),
             next_cursor,
             partial(self._get_friendship_ids, user_id, screen_name, count, f, previous_cursor),
-            previous_cursor
+            previous_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def get_followers_ids(
@@ -4074,21 +4147,34 @@ class Client:
         """
         response, _ = await f(list_id, count, cursor)
 
-        items = find_dict(response, 'entries', find_one=True)[0]
+        # X omits the bottom cursor on the last page, which left this
+        # unbound and raised UnboundLocalError instead of ending the walk.
+        next_cursor = None
+        items = first_dict(response, 'entries', [])
         results = []
         for item in items:
             entry_id = item['entryId']
             if entry_id.startswith('user'):
-                user_info = find_dict(item, 'result', find_one=True)[0]
+                user_info = first_dict(item, 'result')
+                if user_info is None:
+                    # An entry X could not resolve (deleted or restricted
+                    # user) arrives without `result`; skip it, do not die.
+                    continue
                 results.append(User(self, user_info))
             elif entry_id.startswith('cursor-bottom'):
                 next_cursor = item['content']['value']
                 break
 
+        # X treats `count` as a hint on this endpoint too; trim client-side
+        # and hand the surplus back through next() instead of dropping it.
+        results, overflow = limited(results, count)
+
         return Result(
             results,
             partial(self._get_list_users, f, list_id, count, next_cursor),
-            next_cursor
+            next_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def get_list_members(
@@ -4182,22 +4268,25 @@ class Client:
         >>> more_lists = await lists.next()  # Retrieve more lists
         """
         response, _ = await self.gql.search_timeline(query, 'Lists', count, cursor)
-        entries = find_dict(response, 'entries', find_one=True)[0]
+        entries = first_dict(response, 'entries', [])
 
         if cursor is None:
-            items = entries[0]['content']['items']
+            items = (entries[0].get('content', {}).get('items') or []) if entries else []
         else:
-            items = find_dict(response, 'moduleItems', find_one=True)[0]
+            items = first_dict(response, 'moduleItems', [])
 
         lists = []
         for item in items:
             lists.append(List(self, item['item']['itemContent']['list']))
-        next_cursor = entries[-1]['content']['value']
+        next_cursor = last_cursor(entries)
 
+        lists, overflow = limited(lists, count)
         return Result(
             lists,
             partial(self.search_list, query, count, next_cursor),
-            next_cursor
+            next_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def get_notifications(
@@ -4238,13 +4327,22 @@ class Client:
         >>> more_notifications = await notifications.next()
         """
         type = type.capitalize()
-        f = {
+        endpoints = {
             'All': self.v11.notifications_all,
             'Verified': self.v11.notifications_verified,
             'Mentions': self.v11.notifications_mentions
-        }[type]
+        }
+        if type not in endpoints:
+            raise ValueError(
+                f'Invalid type {type!r}; expected one of '
+                f'{", ".join(endpoints)}.'
+            )
+        f = endpoints[type]
         response, _ = await f(count, cursor)
 
+        # X omits the bottom cursor on the last page, which left this
+        # unbound and raised UnboundLocalError instead of ending the walk.
+        next_cursor = None
         global_objects = response['globalObjects']
         users = {
             id: User(self, build_user_data(data))
@@ -4278,20 +4376,26 @@ class Client:
 
             notifications.append(Notification(self, notification, tweet, user))
 
-        entries = find_dict(response, 'entries', find_one=True)[0]
+        entries = first_dict(response, 'entries', [])
         cursor_bottom_entry = [
             i for i in entries
             if i['entryId'].startswith('cursor-bottom')
         ]
         if cursor_bottom_entry:
-            next_cursor = find_dict(cursor_bottom_entry[0], 'value', find_one=True)[0]
+            next_cursor = first_dict(cursor_bottom_entry[0], 'value')
         else:
             next_cursor = None
 
+        # X treats `count` as a hint on this endpoint too; trim client-side
+        # and hand the surplus back through next() instead of dropping it.
+        results, overflow = limited(notifications, count)
+
         return Result(
-            notifications,
+            results,
             partial(self.get_notifications, type, count, next_cursor),
-            next_cursor
+            next_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def search_community(
@@ -4324,7 +4428,7 @@ class Client:
         """
         response, _ = await self.gql.search_community(query, cursor)
 
-        items = find_dict(response, 'items_results', find_one=True)[0]
+        items = first_dict(response, 'items_results', [])
         communities = []
         for item in items:
             communities.append(Community(self, item['result']))
@@ -4402,20 +4506,23 @@ class Client:
         else:
             raise ValueError(f'Invalid tweet_type: {tweet_type}')
 
-        entries = find_dict(response, 'entries', find_one=True)[0]
+        # X omits the bottom cursor on the last page, which left this
+        # unbound and raised UnboundLocalError instead of ending the walk.
+        next_cursor = None
+        entries = first_dict(response, 'entries', [])
         if tweet_type == 'Media':
             if cursor is None:
-                items = entries[0]['content']['items']
-                next_cursor = entries[-1]['content']['value']
-                previous_cursor = entries[-2]['content']['value']
+                items = (entries[0].get('content', {}).get('items') or []) if entries else []
+                next_cursor = last_cursor(entries)
+                previous_cursor = cursor_at(entries, -2)
             else:
-                items = find_dict(response, 'moduleItems', find_one=True)[0]
-                next_cursor = entries[-1]['content']['value']
-                previous_cursor = entries[-2]['content']['value']
+                items = first_dict(response, 'moduleItems', [])
+                next_cursor = last_cursor(entries)
+                previous_cursor = cursor_at(entries, -2)
         else:
             items = entries
-            next_cursor = items[-1]['content']['value']
-            previous_cursor = items[-2]['content']['value']
+            next_cursor = last_cursor(items)
+            previous_cursor = cursor_at(items, -2)
 
         tweets = []
         for item in items:
@@ -4426,12 +4533,18 @@ class Client:
             if tweet is not None:
                 tweets.append(tweet)
 
+        # X treats `count` as a hint on this endpoint too; trim client-side
+        # and hand the surplus back through next() instead of dropping it.
+        results, overflow = limited(tweets, count)
+
         return Result(
-            tweets,
+            results,
             partial(self.get_community_tweets, community_id, tweet_type, count, next_cursor),
             next_cursor,
             partial(self.get_community_tweets, community_id, tweet_type, count, previous_cursor),
-            previous_cursor
+            previous_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def get_communities_timeline(
@@ -4461,31 +4574,44 @@ class Client:
         >>> more_tweets = await tweets.next()  # Retrieve more tweets
         """
         response, _ = await self.gql.communities_main_page_timeline(count, cursor)
-        items = find_dict(response, 'entries', find_one=True)[0]
+        items = first_dict(response, 'entries', [])
         tweets = []
         for item in items:
             if not item['entryId'].startswith('tweet'):
                 continue
-            tweet_data = find_dict(item, 'result', find_one=True)[0]
+            tweet_data = first_dict(item, 'result')
+            if tweet_data is None:
+                continue
             if 'tweet' in tweet_data:
                 tweet_data = tweet_data['tweet']
-            user_data = tweet_data['core']['user_results']['result']
-            community_data = tweet_data['community_results']['result']
+            # A promoted entry carries the advertiser's User object, whose
+            # `core` has no user_results - and no community either.
+            user_data = subobject(
+                subobject(tweet_data, 'core'), 'user_results'
+            ).get('result')
+            community_data = subobject(
+                tweet_data, 'community_results'
+            ).get('result')
+            if user_data is None or community_data is None:
+                continue
             community_data['rest_id'] = community_data['id_str']
             community = Community(self, community_data)
             tweet = Tweet(self, tweet_data, User(self, user_data))
             tweet.community = community
             tweets.append(tweet)
 
-        next_cursor = items[-1]['content']['value']
-        previous_cursor = items[-2]['content']['value']
+        next_cursor = last_cursor(items)
+        previous_cursor = cursor_at(items, -2)
 
+        tweets, overflow = limited(tweets, count)
         return Result(
             tweets,
             partial(self.get_communities_timeline, count, next_cursor),
             next_cursor,
             partial(self.get_communities_timeline, count, previous_cursor),
-            previous_cursor
+            previous_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def join_community(self, community_id: str) -> Community:
@@ -4555,7 +4681,7 @@ class Client:
         """
         response, _ = await f(community_id, count, cursor)
 
-        items = find_dict(response, 'items_results', find_one=True)[0]
+        items = first_dict(response, 'items_results', [])
         users = []
         for item in items:
             if 'result' not in item:
@@ -4571,10 +4697,13 @@ class Client:
             fetch_next_result = None
         else:
             fetch_next_result = partial(self._get_community_users, f, community_id, count, next_cursor)
+        users, overflow = limited(users, count)
         return Result(
             users,
             fetch_next_result,
-            next_cursor
+            next_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def get_community_members(
@@ -4646,7 +4775,7 @@ class Client:
         """
         response, _ = await self.gql.community_tweet_search_module_query(community_id, query, count, cursor)
 
-        items = find_dict(response, 'entries', find_one=True)[0]
+        items = first_dict(response, 'entries', [])
         tweets = []
         for item in items:
             if not item['entryId'].startswith('tweet'):
@@ -4656,15 +4785,18 @@ class Client:
             if tweet is not None:
                 tweets.append(tweet)
 
-        next_cursor = items[-1]['content']['value']
-        previous_cursor = items[-2]['content']['value']
+        next_cursor = last_cursor(items)
+        previous_cursor = cursor_at(items, -2)
 
+        tweets, overflow = limited(tweets, count)
         return Result(
             tweets,
             partial(self.search_community_tweet, community_id, query, count, next_cursor),
             next_cursor,
             partial(self.search_community_tweet, community_id, query, count, previous_cursor),
             previous_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def _stream(self, topics: set[str]) -> AsyncGenerator[tuple[str, Payload]]:
