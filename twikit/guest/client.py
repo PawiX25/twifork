@@ -11,7 +11,7 @@ from httpx._utils import URLPattern
 
 from ..client.gql import GQLClient
 from ..client.v11 import V11Client
-from ..constants import DOMAIN, TOKEN
+from ..constants import COOKIE_DOMAINS, DOMAIN, TOKEN
 from ..errors import (
     BadRequest,
     Forbidden,
@@ -39,14 +39,18 @@ def tweet_from_data(client: GuestClient, data: dict) -> Tweet:
         return None
     if 'tweet' in tweet_data:
         tweet_data = tweet_data['tweet']
-    if 'core' not in tweet_data:
+    core = tweet_data.get('core')
+    if not isinstance(core, dict):
         return None
-    if 'result' not in tweet_data['core']['user_results']:
+    # Same shape as the logged-in parser guards against: a promoted module
+    # carries the advertiser's User object, whose `core` has no user_results.
+    user_results = core.get('user_results')
+    if not isinstance(user_results, dict) or 'result' not in user_results:
         return None
     if 'legacy' not in tweet_data:
         return None
 
-    user_data = tweet_data['core']['user_results']['result']
+    user_data = user_results['result']
     return Tweet(client, tweet_data, User(client, user_data))
 
 
@@ -96,6 +100,20 @@ class GuestClient:
         self.v11 = V11Client(self)
         self.client_transaction = ClientTransaction()
 
+    async def _send(self, method: str, url: str, **kwargs) -> Response:
+        """
+        Raw request, matching :meth:`Client._send`.
+
+        Media and Stream reach for this to fetch binaries; without it every
+        guest-side download died with AttributeError instead of returning
+        bytes. Unlike the logged-in client this is plain httpx - GuestClient
+        has no impersonate option, so there is no curl_cffi branch to route
+        through.
+
+        :meta private:
+        """
+        return await self.http.request(method, url, **kwargs)
+
     async def request(
         self,
         method: str,
@@ -107,7 +125,11 @@ class GuestClient:
         headers = kwargs.pop('headers', {})
 
         if not self.client_transaction.is_inited():
-            cookies_backup = dict(self.http.cookies).copy()
+            # dict(jar) raises CookieConflict on duplicate names across
+            # domains; walk the jar like Client.get_cookies does.
+            cookies_backup = {
+                c.name: c.value for c in self.http.cookies.jar
+            }
             ct_headers = {
                 'Accept-Language': f'{self.language},{self.language.split("-")[0]};q=0.9',
                 'Cache-Control': 'no-cache',
@@ -115,7 +137,13 @@ class GuestClient:
                 'User-Agent': self._user_agent
             }
             await self.client_transaction.init(self.http, ct_headers)
-            self.http.cookies = cookies_backup
+            # Assigning a bare dict strips every domain, and httpx sends a
+            # domain-less cookie to *every* host - the guest token would ride
+            # along to abs.twimg.com and anywhere else contacted afterwards.
+            self.http.cookies.clear()
+            for key, value in cookies_backup.items():
+                for domain in COOKIE_DOMAINS:
+                    self.http.cookies.set(key, value, domain=domain)
 
         tid = self.client_transaction.generate_transaction_id(method=method, path=urlparse(url).path)
         headers['X-Client-Transaction-Id'] = tid

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..media import MEDIA_TYPE, _media_from_data
-from ..utils import find_dict
+from ..utils import find_dict, subobject
 from .user import User
 
 if TYPE_CHECKING:
@@ -108,7 +108,11 @@ class Tweet:
         self.possibly_sensitive: bool = legacy.get('possibly_sensitive')
         self.possibly_sensitive_editable: bool = legacy.get('possibly_sensitive_editable')
         self.quote_count: int = legacy['quote_count']
-        self._media: list = legacy['entities'].get('media')
+        # entities.media holds only the first attachment and no video_info,
+        # and it can be missing entirely - iterating None raised TypeError.
+        self._media: list = (
+            legacy.get('extended_entities') or legacy.get('entities') or {}
+        ).get('media') or []
         self.reply_count: int = legacy['reply_count']
         self.favorite_count: int = legacy['favorite_count']
         self.favorited: bool = legacy['favorited']
@@ -155,12 +159,18 @@ class Tweet:
             if text_list:
                 self.full_text = text_list[0]
 
-            entity_set = note_tweet_results[0]['result']['entity_set']
+            # Neither `result` nor `entity_set` is guaranteed - a note tweet
+            # whose entities X could not resolve arrives without them, and
+            # indexing straight through turned that into a KeyError.
+            entity_set = subobject(
+                subobject(note_tweet_results[0], 'result'), 'entity_set'
+            )
             self.urls: list = entity_set.get('urls')
             hashtags = entity_set.get('hashtags', [])
         else:
-            self.urls: list = legacy['entities'].get('urls')
-            hashtags = legacy['entities'].get('hashtags', [])
+            entities = legacy.get('entities') or {}
+            self.urls: list = entities.get('urls')
+            hashtags = entities.get('hashtags', [])
 
         self.hashtags: list[str] = [
             i['text'] for i in hashtags
@@ -195,11 +205,18 @@ class Tweet:
         ):
             card_data = data['card']['legacy']['binding_values']
 
+            # X sends binding_values as a list of {key, value}, but also as a
+            # plain mapping. Only the list branch assigned the variable, so
+            # the mapping shape raised NameError one line later.
             if isinstance(card_data, list):
                 binding_values = {
                     i.get('key'): i.get('value')
                     for i in card_data
                 }
+            elif isinstance(card_data, dict):
+                binding_values = card_data
+            else:
+                binding_values = {}
 
             if 'title' in binding_values and 'string_value' in binding_values['title']:
                 self.thumbnail_title = binding_values['title']['string_value']

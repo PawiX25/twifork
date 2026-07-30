@@ -95,27 +95,54 @@ class User:
         self.name: str = core.get('name') or legacy.get('name', '')
         self.screen_name: str = core.get('screen_name') or legacy.get('screen_name', '')
         self.profile_image_url: str = avatar.get('image_url') or legacy.get('profile_image_url_https', '')
-        self.profile_banner_url: str = legacy.get('profile_banner_url')
-        self.url: str = legacy.get('url')
+        self.profile_banner_url: str = subobject(data, 'banner').get(
+            'image_url', legacy.get('profile_banner_url'))
+        self.url: str = subobject(data, 'website').get('url', legacy.get('url'))
         self.location: str = location.get('location') or legacy.get('location', '')
         self.description: str = profile_bio.get('description') or legacy.get('description', '')
-        self.description_urls: list = legacy.get('entities', {}).get('description', {}).get('urls', [])
-        self.urls: list = legacy.get('entities', {}).get('url', {}).get('urls')
-        self.pinned_tweet_ids: list[str] = legacy.get('pinned_tweet_ids_str', [])
+        self.description_urls: list = (
+            subobject(
+                subobject(subobject(data, 'profile_bio'), 'entities'),
+                'description'
+            ).get('urls')
+            or ((legacy.get('entities') or {}).get('description') or {})
+            .get('urls', [])
+        )
+        self.urls: list = (
+            subobject(subobject(subobject(data, 'profile_bio'), 'entities'), 'url')
+            .get('urls')
+            or (legacy.get('entities') or {}).get('url', {}).get('urls')
+        )
+        self.pinned_tweet_ids: list[str] = subobject(data, 'pinned_items').get(
+            'tweet_ids_str', legacy.get('pinned_tweet_ids_str', []))
         self.is_blue_verified: bool = data.get('is_blue_verified', False)
         self.verified: bool = verification.get('verified', legacy.get('verified', False))
+        # X sends the string 'None' rather than null when there is no label.
+        label = data.get('parody_commentary_fan_label')
+        self.parody_commentary_fan_label: str | None = (
+            None if label in (None, 'None') else label)
         self.possibly_sensitive: bool = legacy.get('possibly_sensitive', False)
         self.default_profile: bool = legacy.get('default_profile', False)
         self.default_profile_image: bool = legacy.get('default_profile_image', False)
         self.has_custom_timelines: bool = legacy.get('has_custom_timelines', False)
-        self.followers_count: int = legacy.get('followers_count', 0)
+        # X moved these into typed sub-objects; reading only `legacy` made
+        # every counter come back 0 on the guest path, silently.
+        relationship_counts = subobject(data, 'relationship_counts')
+        tweet_counts = subobject(data, 'tweet_counts')
+        action_counts = subobject(data, 'action_counts')
+        self.followers_count: int = relationship_counts.get(
+            'followers', legacy.get('followers_count', 0))
         self.fast_followers_count: int = legacy.get('fast_followers_count', 0)
         self.normal_followers_count: int = legacy.get('normal_followers_count', 0)
-        self.following_count: int = legacy.get('friends_count', 0)
-        self.favourites_count: int = legacy.get('favourites_count', 0)
+        self.following_count: int = relationship_counts.get(
+            'following', legacy.get('friends_count', 0))
+        self.favourites_count: int = action_counts.get(
+            'favorites_count', legacy.get('favourites_count', 0))
         self.listed_count: int = legacy.get('listed_count', 0)
-        self.media_count = legacy.get('media_count', 0)
-        self.statuses_count: int = legacy.get('statuses_count', 0)
+        self.media_count = tweet_counts.get(
+            'media_tweets', legacy.get('media_count', 0))
+        self.statuses_count: int = tweet_counts.get(
+            'tweets', legacy.get('statuses_count', 0))
         self.is_translator: bool = legacy.get('is_translator', False)
         self.translator_type: str = legacy.get('translator_type', '')
         self.withheld_in_countries: list[str] = legacy.get('withheld_in_countries', [])
