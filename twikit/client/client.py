@@ -452,6 +452,18 @@ class Client:
         return response
 
     #: Explains why password login cannot work against X as it stands.
+    _LOGIN_RETIRED = (
+        'X no longer serves the LoginFlow onboarding task this method drives; '
+        'it answers code 366, "flow name LoginFlow is currently not accessible". '
+        'Measured against live x.com: /i/flow/login redirects to '
+        '/i/jf/onboarding/web and the site now posts to '
+        '/i/jfapi/onboarding/web/actions/begin_login, which requires a ~5 KB '
+        '$castle_token produced by obfuscated in-page JavaScript, and offers '
+        'passkey/WebAuthn as a first-factor path. None of that is reachable '
+        'from a plain HTTP client. Authenticate with cookies instead - see '
+        'Client.set_cookies and Client.load_cookies.'
+    )
+
     async def login(
         self,
         *,
@@ -460,10 +472,19 @@ class Client:
         password: str,
         totp_secret: str | None = None,
         cookies_file: str | None = None,
-        enable_ui_metrics: bool = True
+        enable_ui_metrics: bool = True,
+        code_callback: Callable[[str], str | Awaitable[str]] | None = None
     ) -> dict:
         """
         Logs into the account using the specified login information.
+
+        .. warning::
+            This no longer works. X retired the onboarding flow this drives -
+            it answers code 366, "flow name LoginFlow is currently not
+            accessible". Use :func:`set_cookies` or :func:`load_cookies`
+            instead; see the note on :attr:`_LOGIN_RETIRED` for what X
+            replaced it with.
+
         `auth_info_1` and `password` are required parameters.
         `auth_info_2` is optional and can be omitted, but it is
         recommended to provide if available.
@@ -484,6 +505,13 @@ class Client:
         totp_secret : :class:`str`, default=None
             The TOTP (Time-Based One-Time Password) secret key used for
             two-factor authentication (2FA).
+        code_callback : Callable[[:class:`str`], :class:`str`], default=None
+            Called when the login flow asks for a code that cannot be derived
+            locally - the confirmation code mailed by X, or a 2FA code when no
+            `totp_secret` was given. It receives the prompt shown by X and
+            must return the code. May be a coroutine function. Defaults to
+            reading from stdin with :func:`input`, which blocks the event loop
+            and is unusable in a service.
         cookies_file : :class:`str`, default=None
             The file path used for storing and loading cookies.
             If the specified file exists, cookies will be loaded from it, potentially bypassing the login process.
@@ -506,7 +534,13 @@ class Client:
             self.load_cookies(cookies_file)
             return
 
-        guest_token = await self._get_guest_token()
+        try:
+            guest_token = await self._get_guest_token()
+        except ClientTransactionError as e:
+            # The handshake needs a logged-in home page; while logging in there
+            # are no cookies yet, so it reports "refresh your cookies", which is
+            # nonsense advice in this context.
+            raise LoginRetired(self._LOGIN_RETIRED) from e
 
         flow = Flow(self, guest_token)
 
@@ -617,39 +651,56 @@ class Client:
         if flow.task_id == 'DenyLoginSubtask':
             raise TwitterException(flow.response['subtasks'][0]['cta']['secondary_text']['text'])
 
-        if flow.task_id == 'LoginAcid':
-            print(find_dict(flow.response, 'secondary_text', find_one=True)[0]['text'])
+        # X hands out LoginAcid and LoginTwoFactorAuthChallenge in whatever
+        # order it likes, and an account can be asked for both. Handling them
+        # as a fixed if/if sequence returned early after LoginAcid, so a
+        # 2FA step that arrived second was silently skipped and login came
+        # back not logged in. Keep consuming challenges until none is left.
+        for _ in range(4):
+            if flow.task_id == 'LoginAcid':
+                prompt = find_dict(
+                    flow.response, 'secondary_text', find_one=True
+                )
+                code = await self._ask_login_code(
+                    code_callback, prompt[0]['text'] if prompt else ''
+                )
+                await flow.execute_task({
+                    'subtask_id': 'LoginAcid',
+                    'enter_text': {'text': code, 'link': 'next_link'}
+                })
+            elif flow.task_id == 'LoginTwoFactorAuthChallenge':
+                if totp_secret is None:
+                    prompt = find_dict(
+                        flow.response, 'secondary_text', find_one=True
+                    )
+                    totp_code = await self._ask_login_code(
+                        code_callback, prompt[0]['text'] if prompt else ''
+                    )
+                else:
+                    totp_code = pyotp.TOTP(totp_secret).now()
 
-            await flow.execute_task({
-                'subtask_id': 'LoginAcid',
-                'enter_text': {
-                    'text': input('>>> '),
-                    'link': 'next_link'
-                }
-            })
-            return flow.response
-
-        if flow.task_id == 'LoginTwoFactorAuthChallenge':
-            if totp_secret is None:
-                print(find_dict(flow.response, 'secondary_text', find_one=True)[0]['text'])
-                totp_code = input('>>>')
+                await flow.execute_task({
+                    'subtask_id': 'LoginTwoFactorAuthChallenge',
+                    'enter_text': {'text': totp_code, 'link': 'next_link'}
+                })
             else:
-                totp_code = pyotp.TOTP(totp_secret).now()
+                break
 
+            if flow.task_id == 'DenyLoginSubtask':
+                raise TwitterException(
+                    flow.response['subtasks'][0]['cta']['secondary_text']['text']
+                )
+
+        # The old code returned right after LoginAcid, so it never reached
+        # this. Now that the challenge loop falls through, only answer the
+        # duplication check when X is actually asking for it.
+        if flow.task_id == 'AccountDuplicationCheck':
             await flow.execute_task({
-                'subtask_id': 'LoginTwoFactorAuthChallenge',
-                'enter_text': {
-                    'text': totp_code,
-                    'link': 'next_link'
+                'subtask_id': 'AccountDuplicationCheck',
+                'check_logged_in_account': {
+                    'link': 'AccountDuplicationCheck_false'
                 }
             })
-
-        await flow.execute_task({
-            'subtask_id': 'AccountDuplicationCheck',
-            'check_logged_in_account': {
-                'link': 'AccountDuplicationCheck_false'
-            }
-        })
 
         if cookies_file:
             self.save_cookies(cookies_file)
@@ -657,8 +708,25 @@ class Client:
         if not flow.response['subtasks']:
             return
 
-        self._user_id = find_dict(flow.response, 'id_str', find_one=True)[0]
+        user_id = first_dict(flow.response, 'id_str')
+        if user_id is None:
+            raise TwitterException(
+                'Login did not complete - X returned no account. '
+                f'Last subtask: {flow.task_id}'
+            )
+        self._user_id = user_id
         return flow.response
+
+    @staticmethod
+    async def _ask_login_code(callback, prompt: str) -> str:
+        ''':meta private:'''
+        if callback is None:
+            print(prompt)
+            return input('>>> ')
+        result = callback(prompt)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
 
     async def logout(self) -> Response:
         """
