@@ -55,7 +55,14 @@ class List:
         # X returns an empty object for a list that does not exist, so
         # indexing straight through raised KeyError('created_at') instead of
         # something a caller can act on.
-        if not data.get('id_str'):
+        #
+        # A deleted or unknown id gets a shell back that still carries the id
+        # it was asked about and nothing else - measured on a list deleted
+        # seconds earlier, and on the id "1". Accepting it produced a List
+        # whose name was None and whose member_count was 0, which a caller
+        # cannot tell apart from a real, empty list. `name` is the marker:
+        # every list X actually resolves has one.
+        if not data.get('id_str') or data.get('name') is None:
             raise NotFound('The list does not exist.')
 
         self.id: str = data['id_str']

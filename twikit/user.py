@@ -166,11 +166,16 @@ class User:
         self.description: str = profile_bio.get('description') or legacy.get('description', '')
         self.description_urls: list = (
             subobject(bio_entities, 'description').get('urls')
-            or legacy.get('entities', {}).get('description', {}).get('urls', [])
+            # build_user_data writes entities unconditionally, so the key can
+            # be present holding None - .get(key, {}) hands that straight back
+            # and the next .get() raises. subobject() reads a non-mapping as
+            # absent, which is what the fallback needs.
+            or subobject(subobject(legacy, 'entities'), 'description')
+            .get('urls', [])
         )
         self.urls: list = (
             subobject(bio_entities, 'url').get('urls')
-            or legacy.get('entities', {}).get('url', {}).get('urls')
+            or subobject(subobject(legacy, 'entities'), 'url').get('urls')
         )
         self.pinned_tweet_ids: list[str] = (
             pinned_items.get('tweet_ids_str')
