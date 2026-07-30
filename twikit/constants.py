@@ -2,6 +2,10 @@
 TOKEN = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA'
 
 DOMAIN = 'x.com'
+# Hosts the clients authenticate against. `_ui_metrics` deliberately stays on
+# twitter.com, so a cookie pinned only to x.com would never reach it. Shared so
+# the logged-in and guest clients cannot drift apart on this.
+COOKIE_DOMAINS = (f'.{DOMAIN}', '.twitter.com')
 
 FEATURES = {
     'creator_subscriptions_tweet_preview_api_enabled': True,
@@ -24,7 +28,13 @@ FEATURES = {
     'responsive_web_media_download_video_enabled': False,
     'responsive_web_graphql_skip_user_profile_image_extensions_enabled': False,
     'responsive_web_graphql_timeline_navigation_enabled': True,
-    'responsive_web_enhance_cards_enabled': False
+    'responsive_web_enhance_cards_enabled': False,
+    # Without this X silently omits `parody_commentary_fan_label` from every
+    # user it returns - no error, the key is simply absent. Measured against
+    # a labelled account: absent with the flag off, 'Fan' with it on. A
+    # missing feature flag does not fail the request, it quietly trims the
+    # response, which is why the gap went unnoticed.
+    'profile_label_improvements_pcf_label_in_post_enabled': True
 }
 
 USER_FEATURES = {
@@ -38,7 +48,10 @@ USER_FEATURES = {
     'responsive_web_twitter_article_notes_tab_enabled': False,
     'creator_subscriptions_tweet_preview_api_enabled': True,
     'responsive_web_graphql_skip_user_profile_image_extensions_enabled': False,
-    'responsive_web_graphql_timeline_navigation_enabled': True
+    'responsive_web_graphql_timeline_navigation_enabled': True,
+    # See the note in FEATURES: this is what makes X return the
+    # parody/commentary/fan label on a profile lookup.
+    'profile_label_improvements_pcf_label_in_post_enabled': True
 }
 
 CREATE_LIST_FEATURES = {
@@ -302,7 +315,9 @@ TWEET_RESULTS_BY_REST_IDS_FEATURES = {
     'rweb_video_timestamps_enabled': True,
     'longform_notetweets_rich_text_read_enabled': True,
     'longform_notetweets_inline_media_enabled': True,
-    'profile_label_improvements_pcf_label_in_post_enabled': False,
+    # Was False here while every other set has it on, so tweets fetched by id
+    # came back without the parody/commentary/fan label their authors carry.
+    'profile_label_improvements_pcf_label_in_post_enabled': True,
     'rweb_tipjar_consumption_enabled': True,
     'responsive_web_graphql_exclude_directive_enabled': True,
     'verified_phone_label_enabled': False,
