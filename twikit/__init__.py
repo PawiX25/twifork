@@ -12,7 +12,11 @@ __version__ = '2.3.5'
 import asyncio
 import os
 
-if os.name == 'nt':
+# Importing a library must not reconfigure the whole process. Forcing the
+# selector loop on Windows broke every importer that also needed subprocesses
+# (playwright, adspower) with NotImplementedError. Opt in when you actually
+# want it: TWIKIT_WINDOWS_SELECTOR_LOOP=1
+if os.name == 'nt' and os.environ.get('TWIKIT_WINDOWS_SELECTOR_LOOP') == '1':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from ._captcha import Capsolver
