@@ -74,6 +74,17 @@ from .gql import GQLClient
 from .v11 import V11Client
 
 
+def _check_media_ids(media_ids) -> None:
+    """Rejects a bare string, which iterates into one id per character."""
+    if isinstance(media_ids, str):
+        # X answers "more than 4 mediaIds" for a 5-character string, which
+        # points nowhere near the actual mistake.
+        raise TypeError(
+            '`media_ids` must be a list of ids, not a single string; '
+            f'did you mean [{media_ids!r}]?'
+        )
+
+
 class _TransactionSession:
     """
     Minimal session the transaction handshake needs, routed through
@@ -1482,6 +1493,14 @@ class Client:
         dict
             A dictionary containing information about the status of
             the uploaded media.
+
+        Raises
+        ------
+        NotFound
+            If X has no status for this media. The STATUS command only exists
+            for chunked uploads - an image finishes in one request and has no
+            ``processing_info``, so asking about one answers 404. This is why
+            :func:`upload_media` turns ``wait_for_completion`` off for images.
         """
         response, _ = await self.v11.upload_media_status(is_long_video, media_id)
         return response
@@ -1670,6 +1689,7 @@ class Client:
         .upload_media
         .create_poll
         """
+        _check_media_ids(media_ids)
         media_entities = [
             {'media_id': media_id, 'tagged_users': []}
             for media_id in (media_ids or [])
@@ -1688,11 +1708,16 @@ class Client:
             reply_to, attachment_url, community_id, share_with_followers,
             richtext_options, edit_tweet_id, limit_mode
         )
-        if 'errors' in response:
-            raise_exceptions_from_response(response['errors'])
-            raise CouldNotTweet(
-                response['errors'][0] if response['errors'] else 'Failed to post a tweet.'
-            )
+        errors = fatal_errors(response, 'tweet_results')
+        if errors:
+            raise_exceptions_from_response(errors)
+            # Raising the whole error dict buried the one line that says what
+            # went wrong - e.g. "You've hit the daily limit. Subscribe to
+            # Premium for higher limits. (501)" - behind a wall of GraphQL
+            # bookkeeping. Lead with the message, keep the rest reachable.
+            error = errors[0]
+            message = error.get('message') if isinstance(error, dict) else None
+            raise CouldNotTweet(message or error)
         if is_note_tweet:
             _result = response['data']['notetweet_create']['tweet_results']
         else:
@@ -1738,7 +1763,15 @@ class Client:
         ...     media_ids=media_ids
         ... )
         """
+        _check_media_ids(media_ids)
         response, _ = await self.gql.create_scheduled_tweet(scheduled_at, text, media_ids)
+        errors = fatal_errors(response, 'tweet')
+        if errors:
+            raise_exceptions_from_response(errors)
+            raise CouldNotTweet(
+                errors[0].get('message') if isinstance(errors[0], dict)
+                else errors[0]
+            )
         return response['data']['tweet']['rest_id']
 
     async def delete_tweet(self, tweet_id: str) -> Response:
@@ -1788,7 +1821,9 @@ class Client:
 
         if 'user' not in response['data']:
             raise UserNotFound('The user does not exist.')
-        user_data = response['data']['user']['result']
+        user_data = subobject(response['data']['user'], 'result')
+        if not user_data:
+            raise UserNotFound('The user does not exist.')
         if user_data.get('__typename') == 'UserUnavailable':
             raise UserUnavailable(user_data.get('message'))
 
@@ -2254,7 +2289,11 @@ class Client:
         <CommunityNote id="...">
         """
         response, _ = await self.gql.bird_watch_one_note(note_id)
-        note_data = response['data']['birdwatch_note_by_rest_id']
+        note_data = (
+            response.get('data') or {}
+        ).get('birdwatch_note_by_rest_id')
+        if note_data is None:
+            raise NotFound(f'No community note with id {note_id!r}.')
         if 'data_v1' not in note_data:
             raise TwitterException(f'Invalid note id: {note_id}')
         return CommunityNote(self, note_data)
@@ -2791,7 +2830,19 @@ class Client:
         """
         response, _ = await self.gql.bookmark_folders_slice(cursor)
 
-        slice = find_dict(response, 'bookmark_collections_slice', find_one=True)[0]
+        errors = fatal_errors(response, 'bookmark_collections_slice')
+        if errors:
+            raise TwitterException(
+                errors[0].get('message', 'Failed to retrieve bookmark folders.')
+            )
+
+        slice_ = find_dict(response, 'bookmark_collections_slice', find_one=True)
+        if not slice_:
+            return Result([])
+        slice = slice_[0]
+        # X omits the bottom cursor on the last page, which left this
+        # unbound and raised UnboundLocalError instead of ending the walk.
+        next_cursor = None
         results = []
         for item in slice['items']:
             results.append(BookmarkFolder(self, item))
@@ -2865,7 +2916,19 @@ class Client:
             Newly created bookmark folder.
         """
         response, _ = await self.gql.create_bookmark_folder(name)
-        return BookmarkFolder(self, response['data']['bookmark_collection_create'])
+        errors = fatal_errors(response, 'bookmark_collection_create')
+        if errors:
+            # Bookmark collections are Premium-only; X answers code 37,
+            # "User is not authorized to use bookmark collections". Indexing
+            # the missing key turned that into a bare KeyError.
+            raise_exceptions_from_response(errors)
+            raise TwitterException(errors[0].get('message') or errors[0])
+        folder = (response.get('data') or {}).get('bookmark_collection_create')
+        if folder is None:
+            raise TwitterException(
+                'X returned no folder for the new bookmark collection.'
+            )
+        return BookmarkFolder(self, folder)
 
     async def follow_user(self, user_id: str) -> User:
         """
@@ -3138,6 +3201,8 @@ class Client:
         :attr:`.Client.get_available_locations`.
         """
         response, _ = await self.v11.place_trends(woeid)
+        if not response:
+            raise NotFound('No trends available for that location.')
         trend_data = response[0]
         trends = [PlaceTrend(self, data) for data in trend_data['trends']]
         trend_data['trends'] = trends
@@ -3155,6 +3220,22 @@ class Client:
         """
         response, _ = await f(user_id, count, cursor)
 
+        # A protected (or suspended/deactivated) account answers with a bare
+        # UserUnavailable and no timeline. Returning an empty Result made that
+        # indistinguishable from an account that follows nobody, which is the
+        # complaint behind d60/twikit#154.
+        user_result = subobject(
+            subobject(response.get('data') or {}, 'user'), 'result'
+        )
+        if user_result.get('__typename') == 'UserUnavailable':
+            raise UserUnavailable(
+                user_result.get('message') or
+                'The account is protected, suspended or deactivated.'
+            )
+
+        # X omits the bottom cursor on the last page, which left this
+        # unbound and raised UnboundLocalError instead of ending the walk.
+        next_cursor = None
         items_ = find_dict(response, 'entries', find_one=True)
         if not items_:
             return Result.empty()
@@ -3177,10 +3258,17 @@ class Client:
             elif entry_id.startswith('cursor-bottom'):
                 next_cursor = item['content']['value']
 
+        # X ignores `count` here the same way it does on timelines - it kept
+        # handing back 70 users no matter what was asked for. Trim client-side
+        # and keep the surplus for the next page instead of dropping it.
+        results, overflow = limited(results, count)
+
         return Result(
             results,
             partial(self._get_user_friendship, user_id, count, f, next_cursor),
-            next_cursor
+            next_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def _get_user_friendship_2(
@@ -3876,7 +3964,9 @@ class Client:
         <List id="...">
         """
         response, _ = await self.gql.create_list(name, description, is_private)
-        list_info = find_dict(response, 'list', find_one=True)[0]
+        list_info = first_dict(response, 'list')
+        if list_info is None:
+            raise NotFound('The list does not exist.')
         return List(self, list_info)
 
     async def edit_list_banner(self, list_id: str, media_id: str) -> Response:
@@ -3954,7 +4044,9 @@ class Client:
         ... )
         """
         response, _ = await self.gql.update_list(list_id, name, description, is_private)
-        list_info = find_dict(response, 'list', find_one=True)[0]
+        list_info = first_dict(response, 'list')
+        if list_info is None:
+            raise NotFound('The list does not exist.')
         return List(self, list_info)
 
     async def add_list_member(self, list_id: str, user_id: str) -> List:
@@ -4001,7 +4093,7 @@ class Client:
         >>> await client.remove_list_member('list id', 'user id')
         """
         response, _ = await self.gql.list_remove_member(list_id, user_id)
-        errors = response.get('errors')
+        errors = fatal_errors(response, 'list')
         if errors:
             raise TwitterException(
                 errors[0].get('message', 'Failed to remove the list member.')
@@ -4037,22 +4129,49 @@ class Client:
         """
         response, _ = await self.gql.list_management_pace_timeline(count, cursor)
 
-        entries = find_dict(response, 'entries', find_one=True)[0]
+        # X can answer with a viewer shell and an error instead of the
+        # timeline - measured: code 214, "BadRequest:
+        # com.twitter.strato.serialization.DecodeException". `data` is truthy
+        # there, so the failure used to read as "you own no lists".
+        errors = fatal_errors(response, 'entries')
+        if errors:
+            raise TwitterException(
+                errors[0].get('message', 'Failed to retrieve the lists.')
+            )
+
+        entries_ = find_dict(response, 'entries', find_one=True)
+        if not entries_:
+            return Result([])
+        entries = entries_[0]
         items = find_dict(entries, 'items')
 
         if len(items) < 2:
             return Result([])
 
         lists = []
-        for list in items[1]:
-            lists.append(List(self, list['item']['itemContent']['list']))
+        for item in items[1]:
+            # With no lists of your own, X fills this module with unrelated
+            # entries (list suggestions, empty-state cells) that carry no list.
+            list_data = item.get('item', {}).get('itemContent', {}).get('list')
+            if list_data is None:
+                continue
+            lists.append(List(self, list_data))
 
-        next_cursor = entries[-1]['content']['value']
+        if not lists:
+            return Result([])
+
+        next_cursor = entries[-1].get('content', {}).get('value')
+
+        # X treats `count` as a hint on this endpoint too; trim client-side
+        # and hand the surplus back through next() instead of dropping it.
+        results, overflow = limited(lists, count)
 
         return Result(
-            lists,
+            results,
             partial(self.get_lists, count, next_cursor),
-            next_cursor
+            next_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def get_list(self, list_id: str) -> List:
@@ -4459,7 +4578,9 @@ class Client:
             Community object.
         """
         response, _ = await self.gql.community_query(community_id)
-        community_data = find_dict(response, 'result', find_one=True)[0]
+        community_data = first_dict(response, 'result')
+        if community_data is None:
+            raise NotFound('The community does not exist.')
         return Community(self, community_data)
 
     async def get_community_tweets(
@@ -4671,7 +4792,9 @@ class Client:
             The requested community.
         """
         response, _ = await self.gql.request_to_join_community(community_id, answer)
-        community_data = find_dict(response, 'result', find_one=True)[0]
+        community_data = first_dict(response, 'result')
+        if community_data is None:
+            raise NotFound('The community does not exist.')
         community_data['rest_id'] = community_data['id_str']
         return Community(self, community_data)
 
