@@ -36,6 +36,27 @@ class ClientTransaction:
         self.home_page_response = None
         self._inited = False
         self._init_lock = None
+        # Bumped by reset(). A handshake that started before the reset finishes
+        # against the previous session, so its result has to be discarded.
+        self._generation = 0
+
+    def reset(self) -> None:
+        """
+        Forget the handshake so the next request performs it again.
+
+        The keys come from a webpack bundle X rotates every few days, and
+        they are also tied to the session that fetched them - after swapping
+        cookies the old keys keep producing ids X quietly answers 404 to.
+        """
+        self._inited = False
+        self._generation += 1
+        self.key = None
+        self.key_bytes = None
+        self.animation_key = None
+        # get_indices() falls back to this when the fresh page cannot be
+        # parsed, so leaving it behind let a page fetched by the previous
+        # session be reused after the reset.
+        self.home_page_response = None
 
     def is_inited(self) -> bool:
         """Whether a full handshake has completed successfully."""
@@ -47,30 +68,44 @@ class ClientTransaction:
         if self._init_lock is None:
             self._init_lock = asyncio.Lock()
         async with self._init_lock:
-            if self._inited:
-                return
-            home_page_response = self.validate_response(
-                await handle_x_migration(session, headers))
-            # Everything is computed into locals first: partial state must never
-            # be published, otherwise a failure here leaves the object wedged
-            # forever (the caller only re-inits when it sees us uninitialised).
-            # get_animation_key() reads DEFAULT_ROW_INDEX / DEFAULT_KEY_BYTES_INDICES
-            # off self, so those two have to land before it runs. They are
-            # recomputed on every attempt, so a failed run leaves nothing stale.
-            self.DEFAULT_ROW_INDEX, self.DEFAULT_KEY_BYTES_INDICES = await self.get_indices(
-                home_page_response, session, headers)
-            key = self.get_key(response=home_page_response)
-            key_bytes = self.get_key_bytes(key=key)
-            animation_key = self.get_animation_key(
-                key_bytes=key_bytes, response=home_page_response)
+            # Looped because a reset() can land while the handshake is in
+            # flight; see the generation check below.
+            while not self._inited:
+                generation = self._generation
+                home_page_response = self.validate_response(
+                    await handle_x_migration(session, headers))
+                # Everything is computed into locals first: partial state must
+                # never be published, otherwise a failure here leaves the
+                # object wedged forever (the caller only re-inits when it sees
+                # us uninitialised). get_animation_key() reads
+                # DEFAULT_ROW_INDEX / DEFAULT_KEY_BYTES_INDICES off self, so
+                # those two have to land before it runs. They are recomputed on
+                # every attempt, so a failed run leaves nothing stale.
+                (self.DEFAULT_ROW_INDEX,
+                 self.DEFAULT_KEY_BYTES_INDICES) = await self.get_indices(
+                    home_page_response, session, headers)
+                key = self.get_key(response=home_page_response)
+                key_bytes = self.get_key_bytes(key=key)
+                animation_key = self.get_animation_key(
+                    key_bytes=key_bytes, response=home_page_response)
 
-            # Published last and together: is_inited() is the only gate the
-            # client checks, so nothing here may be visible before it flips.
-            self.home_page_response = home_page_response
-            self.key = key
-            self.key_bytes = key_bytes
-            self.animation_key = animation_key
-            self._inited = True
+                if generation != self._generation:
+                    # The cookies changed while this handshake was running, so
+                    # these keys belong to an account that is no longer
+                    # current; publishing them would undo the reset and hand X
+                    # ids it answers 404 to. Returning instead left the caller
+                    # uninitialised, and it then failed with a bare "invalid
+                    # response" from get_key(None) - a message naming nothing.
+                    # Redo the handshake so the caller still gets a usable id.
+                    continue
+
+                # Published last and together: is_inited() is the only gate the
+                # client checks, so nothing here may be visible before it flips.
+                self.home_page_response = home_page_response
+                self.key = key
+                self.key_bytes = key_bytes
+                self.animation_key = animation_key
+                self._inited = True
 
     async def get_indices(self, home_page_response, session, headers):
         key_byte_indices = []
@@ -215,6 +250,16 @@ class ClientTransaction:
         return animation_key
 
     def generate_transaction_id(self, method: str, path: str, response=None, key=None, animation_key=None, time_now=None):
+        if not self._inited and key is None and response is None:
+            # Falling through here reached get_key(None) -> validate_response
+            # (None) and raised "invalid response", which names nothing and
+            # sends people looking at the wrong end of the problem.
+            raise ClientTransactionError(
+                'The X-Client-Transaction-Id handshake has not completed, so '
+                'no id can be generated. Call ClientTransaction.init() first, '
+                'or let Client.request() do it - if it keeps failing, the '
+                'earlier InvalidSession / AccountLocked error says why.'
+            )
         time_now = time_now or math.floor(
             (time.time() * 1000 - 1682924400 * 1000) / 1000)
         time_now_bytes = [(time_now >> (i * 8)) & 0xFF for i in range(4)]
