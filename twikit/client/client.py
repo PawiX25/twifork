@@ -85,6 +85,14 @@ def _check_media_ids(media_ids) -> None:
         )
 
 
+def _conversation_ids(content: dict) -> list[str] | None:
+    """All tweet ids of a conversation module, when X ships them."""
+    ids = subobject(
+        subobject(content, 'metadata'), 'conversationMetadata'
+    ).get('allTweetIds')
+    return ids if isinstance(ids, list) else None
+
+
 class _TransactionSession:
     """
     Minimal session the transaction handshake needs, routed through
@@ -95,6 +103,23 @@ class _TransactionSession:
 
     async def request(self, method: str = 'GET', url: str = '', **kwargs):
         return await self._client._send(method, url, **kwargs)
+
+
+def _conversation_author_id(item: dict) -> str | None:
+    """Author id of one entry inside a profile-conversation module."""
+    result = (
+        item.get('item', {})
+        .get('itemContent', {})
+        .get('tweet_results', {})
+        .get('result', {})
+    )
+    # TweetWithVisibilityResults nests the real tweet one level down; without
+    # this the author came back None, the user's own reply was filed as
+    # somebody else's, and the Replies tab handed back the wrong tweet.
+    if 'tweet' in result:
+        result = result['tweet']
+    user = result.get('core', {}).get('user_results', {}).get('result', {})
+    return user.get('rest_id')
 
 
 class Client:
@@ -2012,13 +2037,13 @@ class Client:
         """
         response, _ = await self.gql.tweet_detail(tweet_id, cursor)
 
-        errors = response.get('errors')
+        errors = fatal_errors(response, 'entries')
         if errors:
             raise TweetNotAvailable(
                 errors[0].get('message', 'The tweet is not available.')
             )
 
-        entries = find_dict(response, 'entries', find_one=True)[0]
+        entries = first_dict(response, 'entries', [])
         reply_to = []
         replies_list = []
         related_tweets = []
@@ -2045,7 +2070,7 @@ class Client:
                     sr_cursor = None
                     show_replies = None
 
-                    for reply in entry['content']['items'][1:]:
+                    for reply in (entry['content'].get('items') or [])[1:]:
                         if 'tweetcomposer' in reply['entryId']:
                             continue
                         if 'tweet' in reply.get('entryId'):
@@ -2069,7 +2094,21 @@ class Client:
 
                     display_type = find_dict(entry, 'tweetDisplayType', True)
                     if display_type and display_type[0] == 'SelfThread':
-                        tweet.thread = [tweet_object, *replies]
+                        # `thread` means the same thing on both builders: the
+                        # author's chain, oldest first, the tweet itself
+                        # included. This one used to start at the first
+                        # continuation instead, so the same tweet had a
+                        # different thread[0] depending on which call produced
+                        # it and callers could not treat the two alike.
+                        tweet.thread = [tweet, tweet_object, *replies]
+
+        if tweet is None:
+            # X answers a nonexistent or hidden id with a timeline that has no
+            # tweet entry and no `errors`, so nothing raised and the caller got
+            # an AttributeError on None a few lines later.
+            raise TweetNotAvailable(
+                f'No tweet with id {tweet_id!r} is available.'
+            )
 
         reply_next_cursor = None
         _fetch_more_replies = None
@@ -2360,13 +2399,32 @@ class Client:
         .get_user_by_screen_name
         """
         tweet_type = tweet_type.capitalize()
-        f = {
+        endpoints = {
             'Tweets': self.gql.user_tweets,
             'Replies': self.gql.user_tweets_and_replies,
             'Media': self.gql.user_media,
             'Likes': self.gql.user_likes,
-        }[tweet_type]
+        }
+        if tweet_type not in endpoints:
+            # A typo used to surface as KeyError('Bzdura'), which says nothing
+            # about what was expected.
+            raise ValueError(
+                f'Invalid tweet_type {tweet_type!r}; '
+                f'expected one of {", ".join(endpoints)}.'
+            )
+        f = endpoints[tweet_type]
         response, _ = await f(user_id, count, cursor)
+
+        # A protected (or suspended/deactivated) account answers with a bare
+        # UserUnavailable result and no timeline at all. Without this it is
+        # indistinguishable from an account that simply has not tweeted, so
+        # callers got an empty Result and no idea why.
+        user_result = subobject(subobject(response.get('data') or {}, 'user'), 'result')
+        if user_result.get('__typename') == 'UserUnavailable':
+            raise UserUnavailable(
+                user_result.get('message') or
+                'The account is protected, suspended or deactivated.'
+            )
 
         instructions_ = find_dict(response, 'instructions', True)
         if not instructions_:
@@ -2395,24 +2453,84 @@ class Client:
                 ]
                 items = module_items[0]['content']['items'] if module_items else []
             else:
-                items = instructions[0].get('moduleItems', []) if instructions else []
+                # TimelineAddToModule is rarely the first instruction, so
+                # indexing [0] returned nothing and Media paginated to an
+                # empty second page without any error.
+                items = first_dict(instructions, 'moduleItems', [])
 
         results = []
+
+        # A pinned tweet arrives in its own TimelinePinEntry instruction rather
+        # than among the entries, so iterating the entries alone silently drops
+        # it. It belongs at the top, the way the profile shows it, and only on
+        # the first page - otherwise every page would repeat it.
+        pinned_ids = set()
+        if tweet_type == 'Tweets' and cursor is None:
+            for instruction in instructions:
+                if instruction.get('type') != 'TimelinePinEntry':
+                    continue
+                pinned = instruction.get('entry', {}).get('content', {})
+                pinned_tweet = tweet_from_data(self, pinned.get('itemContent', {}))
+                if pinned_tweet is not None:
+                    pinned_ids.add(pinned_tweet.id)
+                    results.append(pinned_tweet)
+
         for item in items:
             entry_id = item['entryId']
 
             if not entry_id.startswith(('tweet', 'profile-conversation', 'profile-grid')):
                 continue
 
+            # `item` gets reassigned to one of the module's children below,
+            # so the module metadata has to be read off it first.
+            conversation_ids = _conversation_ids(item.get('content') or {})
+
             if entry_id.startswith('profile-conversation'):
                 tweets = item['content']['items']
-                replies = []
-                for reply in tweets[1:]:
-                    tweet_object = tweet_from_data(self, reply)
-                    if tweet_object is None:
-                        continue
-                    replies.append(tweet_object)
-                item = tweets[0]
+                if tweet_type == 'Replies':
+                    # On the Replies tab a conversation reads
+                    # [what was replied to, the user's reply], so returning the
+                    # first entry hands back somebody else's tweet - the
+                    # opposite of what the tab is for. Emit the user's own
+                    # entries and keep the rest as context.
+                    own = [
+                        t for t in tweets
+                        if _conversation_author_id(t) == user_id
+                    ]
+                    context = [
+                        t for t in tweets
+                        if _conversation_author_id(t) != user_id
+                    ]
+                    if own:
+                        replies = []
+                        for other in context:
+                            tweet_object = tweet_from_data(self, other)
+                            if tweet_object is None:
+                                continue
+                            replies.append(tweet_object)
+                        # Taking own[-1] threw away every earlier reply the
+                        # author made in the same conversation - a self-thread
+                        # under someone else's post lost all but its last
+                        # tweet, silently. Emit them all.
+                        extra_own = own[:-1]
+                        for other in extra_own:
+                            tweet_object = tweet_from_data(self, other)
+                            if tweet_object is None:
+                                continue
+                            tweet_object.replies = replies
+                            results.append(tweet_object)
+                        item = own[-1]
+                    else:
+                        replies = None
+                        item = tweets[0]
+                else:
+                    replies = []
+                    for reply in tweets[1:]:
+                        tweet_object = tweet_from_data(self, reply)
+                        if tweet_object is None:
+                            continue
+                        replies.append(tweet_object)
+                    item = tweets[0]
             else:
                 replies = None
 
@@ -2420,14 +2538,37 @@ class Client:
             if tweet is None:
                 continue
             tweet.replies = replies
+            tweet.conversation_ids = conversation_ids
+            if replies and all(
+                r.user is not None and tweet.user is not None
+                and r.user.id == tweet.user.id
+                for r in replies
+            ):
+                # Only a module where every entry is the same author is a
+                # thread. On the Replies tab the module also carries the tweet
+                # being replied to, written by somebody else - filing that
+                # under `thread` claimed the author had written a self-thread
+                # they never wrote.
+                tweet.thread = [tweet, *replies]
+            if tweet.id in pinned_ids:
+                # X usually keeps the pinned tweet out of the entries, but not
+                # when it heads a conversation module - then it arrives twice
+                # and the injected copy above already covered it. (It can still
+                # come back at its chronological place on a later page, which
+                # is X repeating itself across cursors, not a duplicate here.)
+                continue
             results.append(tweet)
+
+        results, overflow = limited(results, count)
 
         return Result(
             results,
             partial(self.get_user_tweets, user_id, tweet_type, count, next_cursor),
             next_cursor,
             partial(self.get_user_tweets, user_id, tweet_type, count, previous_cursor),
-            previous_cursor
+            previous_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def get_timeline(
@@ -2538,30 +2679,36 @@ class Client:
         ...
         """
         response, _ = await self.gql.home_latest_timeline(count, seen_tweet_ids, cursor)
-        items = find_dict(response, 'entries', find_one=True)[0]
-        next_cursor = items[-1]['content']['value']
+        items = first_dict(response, 'entries', [])
+        next_cursor = last_cursor(items)
         results = []
 
-        def handle_item(item):
+        def handle_item(item, conversation_ids=None):
             tweet = tweet_from_data(self, item)
             if tweet is not None:
+                tweet.conversation_ids = conversation_ids
                 results.append(tweet)
 
         for item in items:
             if 'items' in item['content']:  # home-conversation entries
+                conversation_ids = _conversation_ids(item['content'])
                 for sub_item in item['content']['items']:
                     if 'itemContent' not in sub_item['item']:
                         continue
-                    handle_item(sub_item)
+                    handle_item(sub_item, conversation_ids)
             else:  # tweet entries
                 if 'itemContent' not in item['content']:
                     continue
                 handle_item(item)
 
+        results, overflow = limited(results, count)
+
         return Result(
             results,
             partial(self.get_latest_timeline, count, seen_tweet_ids, next_cursor),
-            next_cursor
+            next_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def favorite_tweet(self, tweet_id: str) -> Response:
@@ -3583,13 +3730,23 @@ class Client:
             f'{user_id}-{await self.user_id()}', text, media_id, reply_to
         )
 
-        message_data = find_dict(response, 'message_data', find_one=True)[0]
+        message_data = first_dict(response, 'message_data')
+        if message_data is None:
+            raise TwitterException(
+                'X accepted the request but returned no message.'
+            )
         users = list(response['users'].values())
+        # The sender used to be read off dictionary order, which X does not
+        # guarantee - a flipped pair made message.reply() answer yourself.
+        sender_id = message_data.get('sender_id') or users[0]['id_str']
+        recipient_id = message_data.get('recipient_id') or (
+            users[1]['id_str'] if len(users) == 2 else users[0]['id_str']
+        )
         return Message(
             self,
             message_data,
-            users[0]['id_str'],
-            users[1]['id_str'] if len(users) == 2 else users[0]['id_str']
+            sender_id,
+            recipient_id
         )
 
     async def add_reaction_to_message(
@@ -3797,12 +3954,16 @@ class Client:
         """
         response = await self._send_dm(group_id, text, media_id, reply_to)
 
-        message_data = find_dict(response, 'message_data', find_one=True)[0]
+        message_data = first_dict(response, 'message_data')
+        if message_data is None:
+            raise TwitterException(
+                'X accepted the request but returned no message.'
+            )
         users = list(response['users'].values())
         return GroupMessage(
             self,
             message_data,
-            users[0]['id_str'],
+            message_data.get('sender_id') or users[0]['id_str'],
             group_id
         )
 
@@ -4238,26 +4399,34 @@ class Client:
         if not items_:
             raise ValueError(f'Invalid list id: {list_id}')
         items = items_[0]
-        next_cursor = items[-1]['content']['value']
+        next_cursor = last_cursor(items)
 
         results = []
 
-        def handle_item(item):
+        def handle_item(item, conversation_ids=None):
             tweet = tweet_from_data(self, item)
             if tweet is not None:
+                tweet.conversation_ids = conversation_ids
                 results.append(tweet)
 
         for item in items:
             if item['entryId'].startswith('tweet'):
                 handle_item(item)
             elif item['entryId'].startswith('list-conversation'):
+                conversation_ids = _conversation_ids(item['content'])
                 for sub_item in item['content']['items']:
-                    handle_item(sub_item)
+                    handle_item(sub_item, conversation_ids)
+
+        # X treats `count` as a hint on this endpoint too; trim client-side
+        # and hand the surplus back through next() instead of dropping it.
+        results, overflow = limited(results, count)
 
         return Result(
             results,
             partial(self.get_list_tweets, list_id, count, next_cursor),
-            next_cursor
+            next_cursor,
+            overflow=overflow,
+            page_size=count
         )
 
     async def _get_list_users(self, f: str, list_id: str, count: int, cursor: str) -> Result[User]:
