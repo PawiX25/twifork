@@ -2274,11 +2274,17 @@ class Client:
         United States Web
         """
         response, _ = await self.gql.about_account(screen_name)
+        data = response.get('data') or {}
+        # X answers an unresolvable handle with an entirely empty `data` and
+        # no error, while a real account always comes back under
+        # user_result_by_screen_name - even when the panel itself is empty.
+        # Without this the two are the same answer, so a user id or a typo
+        # read as "this account has nothing to show".
+        if 'user_result_by_screen_name' not in data:
+            raise UserNotFound('The user does not exist.')
         result = subobject(
             subobject(
-                subobject(response.get('data') or {},
-                          'user_result_by_screen_name'),
-                'result'
+                subobject(data, 'user_result_by_screen_name'), 'result'
             ) or {},
             'about_profile'
         )
@@ -2304,10 +2310,16 @@ class Client:
         >>> spotlights = await client.get_user_spotlights('nike')
         """
         response, _ = await self.gql.profile_spotlights(screen_name)
+        data = response.get('data') or {}
+        # X answers an unresolvable handle with an entirely empty `data` and
+        # no error, while a real account always comes back under
+        # user_result_by_screen_name - even when the panel itself is empty.
+        # Without this the two are the same answer, so a user id or a typo
+        # read as "this account has nothing to show".
+        if 'user_result_by_screen_name' not in data:
+            raise UserNotFound('The user does not exist.')
         result = subobject(
-            subobject(response.get('data') or {},
-                      'user_result_by_screen_name'),
-            'result'
+            subobject(data, 'user_result_by_screen_name'), 'result'
         )
         modules = subobject(result, 'profilemodules').get('v1')
         return modules if isinstance(modules, list) else []
@@ -2350,8 +2362,18 @@ class Client:
         .search_tweet
         .get_notifications
         """
+        handle = screen_name.lstrip('@')
+        # This searches for the literal text "@handle", so a user id produces
+        # the query "@1234567890", which matches nothing and comes back as an
+        # ordinary empty result - no error, just a wrong answer that looks
+        # like "nobody mentioned them".
+        if handle.isdigit():
+            raise ValueError(
+                f'`screen_name` must be a handle, not a user id: {handle!r}. '
+                'Resolve it first with get_user_by_id(...).screen_name.'
+            )
         return await self.search_tweet(
-            f'@{screen_name.lstrip("@")}', 'Latest', count, cursor
+            f'@{handle}', 'Latest', count, cursor
         )
 
     async def search_tweets_by_date(
@@ -3927,7 +3949,12 @@ class Client:
                 continue
             list_data = find_dict(entry, 'list', find_one=True)
             if list_data:
-                lists.append(List(self, list_data[0]))
+                try:
+                    lists.append(List(self, list_data[0]))
+                except NotFound:
+                    # An entry X did not resolve should cost that entry, not
+                    # the rest of the page.
+                    continue
 
         # X treats `count` as a hint on this endpoint too; trim client-side
         # and hand the surplus back through next() instead of dropping it.
@@ -4992,27 +5019,28 @@ class Client:
         if not entries_:
             return Result([])
         entries = entries_[0]
-        items = find_dict(entries, 'items')
 
-        if len(items) < 2:
-            return Result([])
+        # The cursor is read before anything can bail out. A page that yields
+        # no lists is not the end of the collection - X pads this module with
+        # suggestion and empty-state cells - so an early return that dropped
+        # the cursor ended the walk before the real lists further on.
+        next_cursor = entries[-1].get('content', {}).get('value')
 
         lists = []
-        for item in items[1]:
-            # With no lists of your own, X fills this module with unrelated
-            # entries (list suggestions, empty-state cells) that carry no list.
+        items = find_dict(entries, 'items')
+        for item in (items[1] if len(items) >= 2 else []):
             list_data = item.get('item', {}).get('itemContent', {}).get('list')
             if list_data is None:
                 continue
-            lists.append(List(self, list_data))
+            try:
+                lists.append(List(self, list_data))
+            except NotFound:
+                # A cell can carry a `list` that X did not resolve; skip it
+                # rather than losing the rest of the page with it.
+                continue
 
-        next_cursor = entries[-1].get('content', {}).get('value')
-
-        # A page of nothing but suggestion cells is not the end of the
-        # collection, so the cursor has to survive it - dropping it stopped the
-        # walk before the real lists on the next page. But a fetcher must only
-        # be handed out when there is a cursor to advance on: pointing next()
-        # at a None cursor re-requests the first page, forever.
+        # The fetcher only goes out when there is a cursor to advance on:
+        # pointing next() at a None cursor re-requests the first page, forever.
         results, overflow = limited(lists, count)
 
         return Result(
@@ -5253,7 +5281,15 @@ class Client:
 
         lists = []
         for item in items:
-            lists.append(List(self, item['item']['itemContent']['list']))
+            list_data = (
+                item.get('item', {}).get('itemContent', {}).get('list')
+            )
+            if not list_data:
+                continue
+            try:
+                lists.append(List(self, list_data))
+            except NotFound:
+                continue
         next_cursor = last_cursor(entries)
 
         lists, overflow = limited(lists, count)
@@ -5407,7 +5443,12 @@ class Client:
         items = first_dict(response, 'items_results', [])
         communities = []
         for item in items:
-            communities.append(Community(self, item['result']))
+            if 'result' not in item:
+                continue
+            try:
+                communities.append(Community(self, item['result']))
+            except NotFound:
+                continue
         next_cursor_ = find_dict(response, 'next_cursor', find_one=True)
         next_cursor = next_cursor_[0] if next_cursor_ else None
         if next_cursor is None:
@@ -5668,7 +5709,10 @@ class Client:
                 continue
             if item['result'].get('__typename') != 'User':
                 continue
-            users.append(CommunityMember(self, item['result']))
+            try:
+                users.append(CommunityMember(self, item['result']))
+            except NotFound:
+                continue
 
         next_cursor_ = find_dict(response, 'next_cursor', find_one=True)
         next_cursor = next_cursor_[0] if next_cursor_ else None

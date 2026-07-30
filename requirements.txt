@@ -1,4 +1,8 @@
-httpx[socks]
+# Mirrors install_requires in setup.py. httpx needs a floor: the client
+# passes proxy= to AsyncClient and builds AsyncHTTPTransport(proxy=...),
+# both of which arrived in 0.26 replacing proxies=. Without it pip can
+# resolve an older httpx and Client() dies on an unexpected keyword.
+httpx[socks]>=0.26
 filetype
 beautifulsoup4
 pyotp
@@ -6,3 +10,7 @@ lxml
 webvtt-py
 m3u8
 Js2Py-3.13
+
+# Optional, installed via `pip install twifork[impersonate]`. Needed to get
+# past the Cloudflare 403 on the v1.1 endpoints.
+# curl_cffi>=0.7,<0.8
