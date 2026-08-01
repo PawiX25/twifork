@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from ..constants import (
     DOMAIN,
+    AUDIO_SPACE_FEATURES,
     BOOKMARK_FOLDER_TIMELINE_FEATURES,
     COMMUNITY_NOTE_FEATURES,
     COMMUNITY_TWEETS_FEATURES,
@@ -122,6 +123,19 @@ class Endpoint:
     MODERATORS_SLICE_TIMELINE_QUERY = url('9KI_r8e-tgp3--N5SZYVjg/moderatorsSliceTimeline_Query')
     COMMUNITY_TWEET_SEARCH_MODULE_QUERY = url('5341rmzzvdjqfmPKfoHUBw/CommunityTweetSearchModuleQuery')
     TWEET_RESULTS_BY_REST_IDS = url('Tbh_EBpWw_VUFu5tMYAuNQ/TweetResultsByRestIds')
+
+    # --- Spaces ---
+    # Query IDs below were extracted from the current web bundle
+    # (main.*.js + shared AudioSpace* chunks, verified 2026-08).
+    AUDIO_SPACE_BY_ID = url('CSzFYPoVPLfqWFAJDsYZxQ/AudioSpaceById')
+    AUDIO_SPACE_SEARCH = url('NTq79TuSz6fHj8lQaferJw/AudioSpaceSearch')
+    BROWSE_SPACE_TOPICS = url('TYpVV9QioZfViHqEqRZxJA/BrowseSpaceTopics')
+    AUDIO_SPACE_ADD_SHARING = url('G0NcfBzL8WWWg7KYRzVjUg/AudioSpaceAddSharing')
+    AUDIO_SPACE_DELETE_SHARING = url('YMbfLMTUUEzEEMibvvR26Q/AudioSpaceDeleteSharing')
+    SUBSCRIBE_TO_SCHEDULED_SPACE = url('Sxn4YOlaAwEKjnjWV0h7Mw/SubscribeToScheduledSpace')
+    UNSUBSCRIBE_FROM_SCHEDULED_SPACE = url('Zevhh76Msw574ZSs2NQHGQ/UnsubscribeFromScheduledSpace')
+    # Returns the JWT that authenticates against the Periscope (proxsee) API.
+    AUTHENTICATE_PERISCOPE = url('r7VUmxbfqNkx7uwjgONSNw/AuthenticatePeriscope')
 
 
 class GQLClient:
@@ -755,6 +769,75 @@ class GQLClient:
             'withCommunity': True
         }
         return await self.gql_get(Endpoint.TWEET_RESULTS_BY_REST_IDS, variables, TWEET_RESULTS_BY_REST_IDS_FEATURES)
+
+    ####################
+    # Spaces
+    ####################
+
+    async def audio_space_by_id(self, space_id, with_replays=True, with_listeners=True):
+        variables = {
+            'id': space_id,
+            'isMetatagsQuery': False,
+            'withReplays': with_replays,
+            'withListeners': with_listeners,
+            'withSuperFollowsUserFields': True,
+            'withSuperFollowsTweetFields': True,
+            'withBirdwatchPivots': False,
+            'withDownvotePerspective': False,
+            'withReactionsMetadata': False,
+            'withReactionsPerspective': False,
+            'withScheduledSpaces': True
+        }
+        return await self.gql_get(
+            Endpoint.AUDIO_SPACE_BY_ID, variables, AUDIO_SPACE_FEATURES
+        )
+
+    async def audio_space_search(self, query, filter='Live'):
+        # The web client executes this operation as a POST even though it is
+        # declared `query`; GET returns 404.
+        variables = {
+            'filter': filter,
+            'query': query
+        }
+        return await self.gql_post(Endpoint.AUDIO_SPACE_SEARCH, variables)
+
+    async def browse_space_topics(self):
+        return await self.gql_get(Endpoint.BROWSE_SPACE_TOPICS, {})
+
+    async def audio_space_add_sharing(self, space_id, twitter_user_ids, sharing_type='Twitter'):
+        variables = {
+            'id': space_id,
+            'twitterUserIds': twitter_user_ids,
+            'sharingType': sharing_type
+        }
+        return await self.gql_post(
+            Endpoint.AUDIO_SPACE_ADD_SHARING, variables
+        )
+
+    async def audio_space_delete_sharing(self, space_id, twitter_user_ids, sharing_type='Twitter'):
+        variables = {
+            'id': space_id,
+            'twitterUserIds': twitter_user_ids,
+            'sharingType': sharing_type
+        }
+        return await self.gql_post(
+            Endpoint.AUDIO_SPACE_DELETE_SHARING, variables
+        )
+
+    async def subscribe_to_scheduled_space(self, space_id):
+        variables = {'id': space_id}
+        return await self.gql_post(
+            Endpoint.SUBSCRIBE_TO_SCHEDULED_SPACE, variables
+        )
+
+    async def unsubscribe_from_scheduled_space(self, space_id):
+        variables = {'id': space_id}
+        return await self.gql_post(
+            Endpoint.UNSUBSCRIBE_FROM_SCHEDULED_SPACE, variables
+        )
+
+    async def authenticate_periscope(self):
+        return await self.gql_get(Endpoint.AUTHENTICATE_PERISCOPE, {})
 
     ####################
     # For guest client

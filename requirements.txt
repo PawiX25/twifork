@@ -14,3 +14,9 @@ Js2Py-3.13
 # Optional, installed via `pip install twifork[impersonate]`. Needed to get
 # past the Cloudflare 403 on the v1.1 endpoints.
 # curl_cffi>=0.7,<0.8
+
+# Optional, installed via `pip install twifork[spaces]`. WebRTC voice
+# (speak/listen) and the live chat WebSocket. The rest of the Spaces API
+# (metadata, create/end, HLS urls, chat history) works without them.
+# aiortc
+# websockets
