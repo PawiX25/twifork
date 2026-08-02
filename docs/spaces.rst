@@ -125,6 +125,19 @@ Measured chat behaviour against the production chatman:
   gated behind X feature flags and is not reliably reachable; prefer the
   WebSocket (``chat.listen()``) for live chat.
 
+Tweet sharing (verified live):
+
+* ``add_sharing(space_id, tweet_id)`` attaches a tweet to the Space
+  (GraphQL ``audio_space_add_sharing`` with
+  ``{audio_space_id, sharing: {shared_tweet: {tweet_id}}}`` — the old
+  ``{id, twitterUserIds}`` shape fails with GRAPHQL_VALIDATION_FAILED).
+* The sharing id comes back in ``AudioSpaceById`` as
+  ``data.sharings.items[].sharing_id``; ``Space.sharing_ids`` lists them.
+* ``delete_sharing(space_id, sharing_id)`` removes it again (verified:
+  sharing_ids returns to ``[]``).
+* ``associate_tweet_with_broadcast`` (proxsee) links a tweet to the
+  broadcast — returns ``{"success": true}``.
+
 A full working example lives in ``examples/spaces.py``.
 
 WebRTC voice notes (learned the hard way against the production SFU):

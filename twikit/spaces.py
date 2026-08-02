@@ -120,6 +120,12 @@ class Space:
         self.chat = data.get('chat') or {}
         self.tweet = data.get('tweet') or {}
         self.broadcast = data.get('broadcast') or {}
+        self.sharings = (data.get('sharings') or {}).get('items') or []
+
+    @property
+    def sharing_ids(self) -> list[str]:
+        """IDs of the tweet shares on this Space (for delete_sharing)."""
+        return [s.get('sharing_id') for s in self.sharings if s.get('sharing_id')]
 
     @property
     def id(self) -> str | None:
