@@ -150,6 +150,19 @@ Speaking flow (measured):
 
 A full working example lives in ``examples/spaces.py``.
 
+Multi-space operation (verified live):
+
+* One account can participate in several Spaces at once, even from a
+  single ``Client`` instance: ``join()`` and ``request_to_speak()``
+  return a distinct ``session_uuid`` per Space, and the host sees the
+  guest request on each Space's ``get_call_status()``.
+* Simultaneous *speaking* works too: after the host approves both
+  requests, ``speak()`` can publish to two Spaces at the same time (two
+  independent Janus rooms); both sessions stay at ICE ``completed``.
+  Measured with two Spaces, one account, ~10s+ hold.
+* ``get_space().participants`` can lag behind real membership — use
+  ``get_call_status()`` for authoritative participant/request state.
+
 WebRTC voice notes (learned the hard way against the production SFU):
 
 * **No TURN by default.** ``speak()`` / ``listen()`` connect directly
