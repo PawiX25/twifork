@@ -106,6 +106,25 @@ Chat history messages are parsed into :class:`twikit.spaces.ChatMessage`.
 The live WebSocket speaks the chatman protocol (``/chatapi/v1/chatnow``,
 auth + join control frames).
 
+Measured chat behaviour against the production chatman:
+
+* **History works for live and replay** — ``chat.history()`` returns both
+  the join/presence events and the chat messages that were sent while the
+  Space was live (message bodies come back with ``type`` 1 = Chat).
+* **The history endpoint 404s for the first ~60 seconds** after a Space
+  is created. Wait a bit (or retry) before calling ``history()``.
+* **Sending is two-way verified.** ``chat.send()`` broadcasts over the
+  chatnow WebSocket and every participant receives it; sent messages also
+  end up in history. The message body ``type`` is the numeric X8 enum
+  (1 = Chat) — the string ``"Chat"`` is rejected.
+* **Use ``accessChat``, not ``accessChatPublic``.** Public access comes
+  back ``read_only: true`` and ``send()`` refuses to work.
+* **Ended Spaces 404 on ``live_video_stream/status``** — ``chat()`` falls
+  back to the chat token embedded in the ``AudioSpaceById`` payload.
+* ``stream_live_chat`` (the web client's ``/live-chat`` HTTP stream) is
+  gated behind X feature flags and is not reliably reachable; prefer the
+  WebSocket (``chat.listen()``) for live chat.
+
 A full working example lives in ``examples/spaces.py``.
 
 WebRTC voice notes (learned the hard way against the production SFU):

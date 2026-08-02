@@ -1988,11 +1988,16 @@ class Spaces:
         space: Space | str,
         session_id: str | None = None,
         cursor: str | None = None,
+        replay: bool = False,
     ) -> AsyncIterator[dict]:
         """
         Live chat via the web client's HTTP stream (/live-chat). Yields
         parsed JSON events (userId, controlType, …). Does not require the
         `websockets` package.
+
+        With ``replay=True`` the endpoint returns the chat log of an
+        ended Space (``replay=1``), paged by ``cursor`` — no chat token
+        needed, works for ended spaces too.
         """
         if not isinstance(space, Space):
             space = await self.get_space(space)
@@ -2005,14 +2010,17 @@ class Spaces:
         }
         if cursor is not None:
             params['cursor'] = cursor
+        if replay:
+            params['replay'] = 1
         headers = dict(self._client._base_headers)
         # /live-chat demands the same client-transaction header as the rest
-        # of the API (401 without it).
+        # of the API (401 without it) plus the CSRF token.
         headers['X-Client-Transaction-Id'] = (
             self._client.client_transaction.generate_transaction_id(
                 method='GET', path='/live-chat'
             )
         )
+        headers['X-Csrf-Token'] = self._client._get_csrf_token() or ''
         async with self._client.http.stream(
             'GET',
             'https://x.com/live-chat',
