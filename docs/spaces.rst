@@ -107,3 +107,28 @@ The live WebSocket speaks the chatman protocol (``/chatapi/v1/chatnow``,
 auth + join control frames).
 
 A full working example lives in ``examples/spaces.py``.
+
+WebRTC voice notes (learned the hard way against the production SFU):
+
+* **No TURN by default.** ``speak()`` / ``listen()`` connect directly
+  (host candidates only) unless you pass ``ice_servers`` explicitly.
+  X's TURN server (``turns:turn.pscp.tv:443``) tears the TLS connection
+  down after ~60s, which silently kills the media path and makes the
+  SFU drop the publisher. Direct connectivity avoids this entirely.
+* **Hosts must subscribe to their own feed.** ``speak()`` attaches a
+  second videoroom handle on the same Janus session and joins as a
+  subscriber of the host's own stream (mirroring the web client's
+  ``t8`` handle). Without this the backend marks the space
+  ``TimedOut`` after about two minutes even while media flows.
+* **Pace your audio track.** aiortc sends RTP as fast as
+  ``AudioStreamTrack.recv()`` yields frames — it does not pace in real
+  time. A naive track that returns 20ms frames back-to-back plays back
+  at ~15x speed. Sleep ``0.02`` seconds per 20ms frame in ``recv()``.
+* **Unmute + publishStream.** After the SDP offer, ``speak()`` calls
+  ``audiospace/unmuteSpeaker`` (X starts hosts auto-muted) and
+  ``audiospace/stream/publish`` (announces the published stream to the
+  backend). Both are best-effort.
+* **One poller per Janus session.** A second long-poll task on the same
+  session steals events (the SDP answer gets lost and ICE stays
+  ``new``). The session's main handle long-polls and dispatches events
+  by ``sender`` handle id.

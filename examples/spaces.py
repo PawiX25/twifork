@@ -81,6 +81,60 @@ async def main() -> None:
         await client.spaces.end_space(space_id)
         print(f'ended {space_id}')
 
+    # 6. speak (opt-in, visible): stream a paced sine wave into a live
+    #    Space. Requires `pip install twifork[spaces]`.
+    if os.environ.get('SPACES_SPEAK'):
+        space_id = os.environ.get('SPACES_SPEAK')
+        import math
+        import struct
+
+        from aiortc.mediastreams import AudioFrame, AudioStreamTrack
+
+        class PacedSineTrack(AudioStreamTrack):
+            kind = 'audio'
+
+            def __init__(self, freq: int = 440):
+                super().__init__()
+                self._n = 0
+                self._pts = 0
+                self._next = None
+
+            async def recv(self):
+                # aiortc does NOT pace RTP: frames are sent as fast as
+                # recv() yields. Sleep 20ms per 20ms frame or the audio
+                # plays back at ~15x speed.
+                now = asyncio.get_event_loop().time()
+                if self._next is None:
+                    self._next = now
+                delay = self._next - now
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                self._next += 0.02
+                from fractions import Fraction
+                n = 960
+                buf = bytearray(n * 2)
+                for i in range(n):
+                    v = int(8000 * math.sin(2 * math.pi * 440 * (self._n + i) / 48000))
+                    struct.pack_into('<h', buf, i * 2, v)
+                self._n += n
+                frame = AudioFrame(format='s16', layout='mono', samples=n)
+                frame.sample_rate = 48000
+                frame.pts = self._pts
+                frame.time_base = Fraction(1, 48000)
+                self._pts += n
+                frame.planes[0].update(bytes(buf))
+                return frame
+
+        session = await client.spaces.speak(
+            space_id,
+            audio_track=PacedSineTrack(),
+        )
+        print(f'speaking into {space_id} (publisher id {session.publisher_id})')
+        try:
+            await asyncio.sleep(20)
+        finally:
+            await session.close()
+
     await client.http.aclose()
 
 

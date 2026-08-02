@@ -752,12 +752,22 @@ class ChatmanApi:
             'twitter_user_id': twitter_user_id,
         })
 
-    async def admin_invite(self, broadcast_id: str, session_uuid: str,
-                           twitter_user_id: str) -> dict:
+    async def admin_invite(
+        self,
+        broadcast_id: str,
+        twitter_user_ids: list[str],
+        session_uuid: str = '',
+    ) -> dict:
+        """Register admins (host/cohosts) in the chatman room.
+
+        The web client calls this right after publishBroadcast with the
+        host's own twitter id — it is what makes the host show up as the
+        space admin (and unmuted) for listeners.
+        """
         return await self._post('audiospace/admin/invite', {
             'broadcast_id': broadcast_id,
+            'twitter_user_ids': twitter_user_ids,
             'session_uuid': session_uuid,
-            'twitter_user_id': twitter_user_id,
         })
 
     async def stream_eject(self, session_uuid: str) -> dict:
@@ -806,11 +816,12 @@ class JanusClient:
         self._pending: dict[str, asyncio.Future] = {}
         self._poll_task: asyncio.Task | None = None
         # handlers: on_jsep(sdp, event), on_publisher_id(id),
-        # on_publishers(list), on_attached(streams)
+        # on_publishers(list), on_attached(streams), on_raw_event(event)
         self.on_jsep = None
         self.on_publisher_id = None
         self.on_publishers = None
         self.on_attached = None
+        self.on_raw_event = None
 
     def _headers(self) -> dict:
         return {
@@ -830,7 +841,10 @@ class JanusClient:
                     f'Janus error [{resp.get("error", {}).get("code")}]: '
                     f'{resp.get("error", {}).get("reason")}'
                 )
-            future.set_result(resp)
+            # The long-poll loop may already have resolved this transaction
+            # (the ack arrives both as the HTTP response and as a poll event).
+            if not future.done():
+                future.set_result(resp)
             return resp
         except Exception as e:
             if not future.done():
@@ -839,7 +853,7 @@ class JanusClient:
         finally:
             self._pending.pop(transaction, None)
 
-    async def _message(self, payload: dict) -> dict:
+    async def _message(self, payload: dict, jsep: dict | None = None) -> dict:
         """Send a videoroom plugin message through the attached handle."""
         if self.session_id is None or self.handler_id is None:
             raise SpaceError('Janus session/handle not created')
@@ -848,8 +862,11 @@ class JanusClient:
             'periscope_user_id': self.periscope_user_id,
             **payload,
         }
+        message = {'janus': 'message', 'body': body}
+        if jsep is not None:
+            message['jsep'] = jsep
         resp = await self._dispatch(
-            {'janus': 'message', 'body': body},
+            message,
             suffix=f'{self.session_id}/{self.handler_id}',
         )
         plugin = resp.get('plugindata', {}).get('data') or {}
@@ -928,15 +945,24 @@ class JanusClient:
             'session_uuid': session_uuid,
             'stream_name': stream_name,
             'vidman_token': vid_man_token,
-            'descriptions': descriptions,
         }
+        # NOTE: do NOT include `descriptions` — the gateway answers 429
+        # ("Error processing SDP") when it is present. The web client sends
+        # it as `undefined` (dropped by JSON.stringify).
         if ice_restart:
             payload['restart'] = True
-        resp = await self._message(payload)
+        resp = await self._message(payload, jsep={'type': 'offer', 'sdp': sdp})
         # The answer may ride along on the configure response.
         jsep = resp.get('jsep')
         if jsep and self.on_jsep:
             self.on_jsep(jsep, resp)
+
+    async def send_sdp_answer(self, sdp: str) -> dict:
+        """Answer the server's SDP offer (subscriber side, `start`)."""
+        return await self._message(
+            {'request': 'start'},
+            jsep={'type': 'answer', 'sdp': sdp},
+        )
 
     async def unpublish(self) -> None:
         await self._message({'request': 'unpublish'})
@@ -990,10 +1016,17 @@ class JanusClient:
                 future = self._pending.pop(transaction)
                 if not future.done():
                     future.set_result(event)
+                # The event may carry the async result of the request (e.g.
+                # the SDP answer to a configure) even though the caller
+                # already received its (ack) HTTP response. Surface it to
+                # the handlers so media negotiation never gets dropped.
+                self._handle_event(event)
                 continue
             self._handle_event(event)
 
     def _handle_event(self, event: dict) -> None:
+        if self.on_raw_event:
+            self.on_raw_event(event)
         jsep = event.get('jsep')
         if jsep and self.on_jsep:
             self.on_jsep(jsep, event)
@@ -1059,8 +1092,11 @@ class SpaceVoiceSession:
         room_id: str = '',
         http: _Http | None = None,
     ):
+        self._http = http or _Http()
+        self.periscope_user_id = periscope_user_id
+        self.room_id = room_id
         self.janus = JanusClient(
-            janus_url, vid_man_token, http or _Http(),
+            janus_url, vid_man_token, self._http,
             periscope_user_id=periscope_user_id,
             room_id=room_id,
         )
@@ -1084,6 +1120,28 @@ class SpaceVoiceSession:
             ) from None
         return __import__('aiortc')
 
+    @staticmethod
+    def _make_peer_connection(aiortc, ice_servers: list[dict] | None):
+        """Build an RTCPeerConnection, honouring TURN servers via
+        RTCConfiguration (aiortc does not accept `iceServers=` directly)."""
+        if not ice_servers:
+            return aiortc.RTCPeerConnection()
+        try:
+            servers = [
+                aiortc.RTCIceServer(
+                    urls=srv.get('urls') or [],
+                    username=srv.get('username'),
+                    credential=srv.get('credential'),
+                )
+                for srv in ice_servers
+            ]
+            return aiortc.RTCPeerConnection(
+                configuration=aiortc.RTCConfiguration(iceServers=servers)
+            )
+        except Exception:
+            # Fall back to host-only ICE if the config path is unavailable.
+            return aiortc.RTCPeerConnection()
+
     async def connect(
         self,
         ice_servers: list[dict],
@@ -1091,6 +1149,7 @@ class SpaceVoiceSession:
         create_room: bool = False,
         streams: list | None = None,
         with_dummy_publisher: bool = False,
+        audio_track=None,
     ) -> None:
         aiortc = self._require_aiortc()
         self._publisher_future = asyncio.get_running_loop().create_future()
@@ -1101,24 +1160,80 @@ class SpaceVoiceSession:
         await self.janus.create()
         await self.janus.attach()
 
-        self.pc = aiortc.RTCPeerConnection(
-            iceServers=ice_servers if ice_servers else None
-        )
+        # Hosts must also attach a SECOND videoroom handle on the SAME
+        # session and subscribe to their own feed (the web client's t8
+        # handle). Without it the backend marks the space TimedOut after
+        # ~2 minutes even while the media is flowing. NOTE: only the main
+        # handle long-polls the session — a second poller on the same
+        # session steals events (the SDP answer gets lost and ICE stays
+        # "new"). The main poller dispatches by `sender` handle id.
+        self._subscriber_handle: JanusClient | None = None
+        if as_publisher:
+            janus2 = JanusClient(
+                self.janus.janus_url,
+                self.janus.vid_man_token,
+                self._http,
+                periscope_user_id=self.periscope_user_id,
+                room_id=self.room_id,
+            )
+            janus2.session_id = self.janus.session_id
+            await janus2.attach()
+            self._subscriber_handle = janus2
+
+            def dispatch_raw(evt: dict, _j2=janus2):
+                if evt.get('sender') != _j2.handler_id:
+                    return
+                jsep = evt.get('jsep')
+                if jsep and _j2.on_jsep:
+                    _j2.on_jsep(jsep, evt)
+                plugin = evt.get('plugindata', {}).get('data') or {}
+                if plugin.get('videoroom') == 'attached' and _j2.on_attached:
+                    _j2.on_attached(plugin.get('streams'))
+            self.janus.on_raw_event = dispatch_raw
+
+        self.pc = self._make_peer_connection(aiortc, ice_servers)
         self.pc.on('track', self._on_track)
+        self.pc.on('iceconnectionstatechange', self._on_ice_state)
 
         if as_publisher:
             if create_room:
-                await self.janus.create_room(
-                    with_dummy_publisher=with_dummy_publisher
-                )
+                try:
+                    await self.janus.create_room(
+                        with_dummy_publisher=with_dummy_publisher
+                    )
+                except SpaceError as e:
+                    # The room already exists when the host re-joins their
+                    # own space or when joining an existing one — that is
+                    # fine, proceed to join as publisher.
+                    msg = str(e).lower()
+                    if 'already exists' not in msg and '427' not in msg:
+                        raise
             await self.janus.join_as_publisher(self.display or '')
-            # Give the mic track time to be ready before the offer.
+            try:
+                publisher_id = await self.wait_for_publisher_id(timeout=15)
+            except asyncio.TimeoutError:
+                publisher_id = None
+            # Subscribe to our own feed on the second handle (keeps the
+            # space from being timed out by the backend).
+            if self._subscriber_handle is not None and publisher_id is not None:
+                try:
+                    await self._subscriber_handle.join_as_subscriber(
+                        [{'feed_id': publisher_id, 'mid': '0'}]
+                    )
+                except SpaceError:
+                    pass
+            if audio_track is not None:
+                # The web client adds its audio track with an explicit
+                # 'sendonly' transceiver direction; aiortc's addTrack()
+                # defaults to 'sendrecv', which makes X's SFU classify the
+                # session as a listener and tear it down after ~60s.
+                self.pc.addTransceiver(audio_track, direction='sendonly')
+            # Give the track time to be ready before the offer.
             await asyncio.sleep(0.2)
             offer = await self.pc.createOffer()
             await self.pc.setLocalDescription(offer)
             await self.janus.send_sdp_offer(
                 offer.sdp,
-                descriptions=[offer.sdp],
                 stream_name=self.stream_name,
                 session_uuid=self.session_uuid,
                 vid_man_token=self.janus.vid_man_token,
@@ -1130,7 +1245,6 @@ class SpaceVoiceSession:
             await self.pc.setLocalDescription(offer)
             await self.janus.send_sdp_offer(
                 offer.sdp,
-                descriptions=[offer.sdp],
                 stream_name=self.stream_name,
                 session_uuid=self.session_uuid,
                 vid_man_token=self.janus.vid_man_token,
@@ -1176,7 +1290,13 @@ class SpaceVoiceSession:
         self.remote_audio = track
         if self.pc is not None:
             self.pc.iceConnectionState  # touch
-            self._connected.set()
+
+    def _on_ice_state(self):
+        try:
+            if self.pc.iceConnectionState in ('connected', 'completed'):
+                self._connected.set()
+        except Exception:
+            pass
 
     async def close(self):
         if self.pc is not None:
@@ -1479,6 +1599,16 @@ class Spaces:
                 **(publish_extra or {}),
             }
             await self.proxsee.publish_broadcast(payload)
+            # Register the host as the space admin in chatman (the web
+            # client's `adminInvite` right after publishBroadcast). Without
+            # this the host shows up muted and listeners hear nothing.
+            try:
+                await self.chatman.initialize(resp.get('access_token'))
+                await self.chatman.admin_invite(
+                    broadcast_id, [str(broadcast.get('twitter_id') or '')]
+                )
+            except SpaceError:
+                pass
             # The room/publisher registration has served its purpose; tear
             # the Janus session down. The space stays live (host reconnects
             # with reconnectHost when it starts sending audio).
@@ -1559,6 +1689,7 @@ class Spaces:
         space: Space | str,
         *,
         on_audio_track=None,
+        audio_track=None,
         ice_servers: list[dict] | None = None,
         **join_kwargs,
     ) -> SpaceVoiceSession:
@@ -1567,9 +1698,11 @@ class Spaces:
         aiortc). Returns a SpaceVoiceSession with `.pc` (RTCPeerConnection)
         and `.publisher_id`.
 
-        ``on_audio_track`` is an optional callback receiving an aiortc
-        AudioStreamTrack you can push PCM frames into; if omitted a silent
-        tone track is used.
+        ``audio_track`` is an optional aiortc AudioStreamTrack whose
+        ``recv()`` returns 48 kHz stereo AudioFrames; it is added before the
+        initial SDP offer. ``on_audio_track`` (legacy) is a callback
+        receiving the session and returning a track, added right after the
+        first offer (triggers a renegotiation).
         """
         joined = await self.join(space, as_speaker=True, **join_kwargs)
         session_uuid = joined.get('session_uuid')
@@ -1582,12 +1715,12 @@ class Spaces:
             raise SpaceError(f'negotiate returned no janus info: {neg}')
 
         if ice_servers is None:
-            turn = await self.proxsee.get_turn_servers()
-            ice_servers = [{
-                'urls': turn.get('uris') or [],
-                'username': turn.get('username'),
-                'credential': turn.get('password'),
-            }]
+            # Default to DIRECT connection (no TURN). X's TURN server
+            # (turns:turn.pscp.tv:443) tears the TLS connection down after
+            # ~60s, killing the media path and making the SFU drop the
+            # publisher. Pass explicit ice_servers to enable TURN/relay
+            # when direct connectivity is unavailable.
+            ice_servers = []
 
         sp = isinstance(space, Space) and space or await self.get_space(space)
         session = SpaceVoiceSession(
@@ -1598,6 +1731,7 @@ class Spaces:
             display=self.proxsee.periscope_user_id or '',
             periscope_user_id=self.proxsee.periscope_user_id or '',
             room_id=sp.id or '',
+            http=self._http,
         )
         if on_audio_track is not None:
             session.pc = None  # replaced inside connect via _require_aiortc
@@ -1605,11 +1739,24 @@ class Spaces:
             ice_servers,
             as_publisher=True,
             create_room=True,
+            audio_track=audio_track,
         )
-        if on_audio_track is not None:
+        # Host/speaker bookkeeping that the web client performs right after
+        # the SDP offer: unmute the speaker (X starts hosts auto-muted —
+        # without this the backend treats the publisher as muted) and
+        # announce the published stream (audiospace/stream/publish).
+        try:
+            await self.chatman.unmute_speaker(session_uuid, sp.id or '')
+        except SpaceError:
+            pass
+        try:
+            await self.chatman.publish_stream(session_uuid)
+        except SpaceError:
+            pass
+        if on_audio_track is not None and audio_track is None:
             track = on_audio_track(session)
             if track is not None:
-                session.pc.addTrack(track)
+                session.pc.addTransceiver(track, direction='sendonly')
                 await session.pc.setLocalDescription(
                     await session.pc.createOffer()
                 )
@@ -1620,6 +1767,90 @@ class Spaces:
                     session_uuid=session_uuid,
                     vid_man_token=janus_jwt,
                 )
+        return session
+
+    async def host(
+        self,
+        created: dict,
+        *,
+        audio_track=None,
+        ice_servers: list[dict] | None = None,
+        publish_extra: dict | None = None,
+    ) -> SpaceVoiceSession:
+        """
+        Open the host voice session for a Space created by
+        :meth:`create_space` (the creator's own WebRTC publish path).
+
+        ``created`` is the return value of ``create_space()`` — it carries
+        the Janus gateway URL, credential and stream name that only the
+        createBroadcast response contains (there is no way to re-fetch
+        them later; ``audiospace/join`` is 403 for the host).
+
+        The full web-client host flow is applied: attach a second
+        videoroom handle and subscribe to the host's own feed (prevents
+        the backend from timing the space out), TURN-less direct ICE by
+        default (X's TURN tears down after ~60s), then best-effort
+        ``unmuteSpeaker`` + ``stream/publish`` after the SDP offer.
+        """
+        resp = created
+        broadcast = resp.get('broadcast') or {}
+        broadcast_id = broadcast.get('id') or resp.get('broadcast_id')
+        if not broadcast_id:
+            raise SpaceError('create_space response has no broadcast id')
+        if ice_servers is None:
+            # Direct connection by default (see speak() for the TURN note).
+            ice_servers = []
+        try:
+            await self.chatman.initialize(resp.get('access_token') or '')
+        except SpaceError:
+            pass
+
+        session = SpaceVoiceSession(
+            janus_url=resp.get('webrtc_gw_url') or '',
+            vid_man_token=resp.get('credential') or '',
+            stream_name=resp.get('stream_name') or broadcast_id,
+            session_uuid='',
+            display=self.proxsee.periscope_user_id or '',
+            periscope_user_id=self.proxsee.periscope_user_id or '',
+            room_id=broadcast_id,
+            http=self._http,
+        )
+        await session.connect(
+            ice_servers,
+            as_publisher=True,
+            create_room=True,
+            audio_track=audio_track,
+        )
+        # The SFU must know the room's active publisher: re-publish with
+        # the new session's publisher id (the create_space() registration
+        # belonged to the temporary session).
+        if session.publisher_id:
+            try:
+                payload = {
+                    'broadcast_id': broadcast_id,
+                    'status': broadcast.get('title') or '',
+                    'topics': [],
+                    'conversation_controls': 0,
+                    'mentioned_twitter_user_ids': [],
+                    'janus_publisher_id': session.publisher_id,
+                    'janus_room_id': broadcast_id,
+                    'webrtc_handle_id': session.janus.handler_id,
+                    'webrtc_session_id': session.janus.session_id,
+                    **(publish_extra or {}),
+                }
+                await self.proxsee.publish_broadcast(payload)
+            except SpaceError:
+                pass
+        # Host bookkeeping right after the SDP offer (web client does the
+        # same): unmute (hosts start auto-muted) + stream/publish.
+        try:
+            await self.chatman.unmute_speaker('', broadcast_id)
+        except SpaceError:
+            pass
+        try:
+            await self.chatman.publish_stream('')
+        except SpaceError:
+            pass
         return session
 
     async def listen(
@@ -1642,12 +1873,8 @@ class Spaces:
         janus_jwt = neg.get('janus_jwt') or neg.get('janusJwt')
         webrtc_gw_url = neg.get('webrtc_gw_url') or neg.get('webrtcGwUrl')
         if ice_servers is None:
-            turn = await self.proxsee.get_turn_servers()
-            ice_servers = [{
-                'urls': turn.get('uris') or [],
-                'username': turn.get('username'),
-                'credential': turn.get('password'),
-            }]
+            # Direct connection by default (see speak() for the TURN note).
+            ice_servers = []
         status = await self.chatman.get_call_status(
             (space.id if isinstance(space, Space) else space)
         )
