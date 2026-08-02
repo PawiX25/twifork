@@ -124,10 +124,21 @@ await client.get_trends('trending')                 # トレンド
 - **無料・オープンソース**（MIT）。
 - **`twikit` の置き換え** — インポート名は同じなので、コードはそのままで構いません。
 - ツイート、検索、タイムライン、トレンド、ユーザー、DM、メディア、ブックマークなど。
+- **X スペース（Spaces）** — 読み取り・検索・作成・公開・モデレーション・終了、HLS ストリーム URL、チャット履歴・ライブチャットに対応。コア機能は追加パッケージ不要（WebRTC 音声とライブチャット WS は `pip install twifork[spaces]`）。`examples/spaces.py` 参照:
+
+  ```python
+  space = await client.spaces.get_space('1DXGydznBYWKM')
+  stream = await client.spaces.get_stream(space.media_key)   # HLS URL
+  chat = await client.spaces.chat(space)                     # 履歴
+  created = await client.spaces.create_space(title='こんにちは')  # ライブ開始
+  await client.spaces.end_space(created['broadcast']['id'])
+  ```
 
 ## ドキュメント
 
 API リファレンス（本家のもの。パッケージの中身は同じなので、そのまま使えます）: https://twikit.readthedocs.io/en/latest/twikit.html
+
+Spaces ガイド: [docs/spaces.rst](docs/spaces.rst)
 
 ## コミュニティ
 

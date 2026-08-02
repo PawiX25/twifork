@@ -47,6 +47,7 @@ from ..group import Group, GroupMessage
 from ..list import List
 from ..message import Conversation, Message
 from ..notification import Notification
+from ..spaces import Spaces
 from ..streaming import Payload, StreamingSession, _payload_from_data
 from ..trend import Location, PlaceTrend, PlaceTrends, Trend
 from ..tweet import CommunityNote, Poll, ScheduledTweet, Tweet, tweet_from_data
@@ -187,6 +188,8 @@ class Client:
 
         self.gql = GQLClient(self)
         self.v11 = V11Client(self)
+        # Spaces (create/join/listen/speak/end/chat) — see twikit/spaces.py
+        self.spaces = Spaces(self)
         # Headers of the most recent response. X reports the remaining budget
         # on every call, but until now it was only reachable from a 429, which
         # is exactly one request too late to be useful.

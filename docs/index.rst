@@ -6,6 +6,7 @@ Welcome to twikit's documentation!
    :caption: Contents:
 
    twikit
+   spaces
 
 
 Indices and tables

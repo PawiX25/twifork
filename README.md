@@ -137,10 +137,24 @@ More examples (upstream, still apply): https://github.com/d60/twikit/tree/main/e
 - **Free & open source** (MIT).
 - **Drop-in `twikit` replacement** — same import, your code doesn't change.
 - Tweets, search, timelines, trends, users, DMs, media, bookmarks, and more.
+- **X Spaces** — read, search, create, publish, moderate and end audio
+  Spaces, HLS stream urls, chat history and live chat. No extra packages for
+  the core flow (`pip install twifork[spaces]` adds WebRTC voice + live chat
+  WebSocket). See `examples/spaces.py`:
+
+  ```python
+  space = await client.spaces.get_space('1DXGydznBYWKM')
+  stream = await client.spaces.get_stream(space.media_key)   # HLS url
+  chat = await client.spaces.chat(space)                     # history
+  created = await client.spaces.create_space(title='hi')     # go live
+  await client.spaces.end_space(created['broadcast']['id'])
+  ```
 
 ## Documentation
 
 Full API reference (upstream — the package surface is the same): https://twikit.readthedocs.io/en/latest/twikit.html
+
+Spaces guide: [docs/spaces.rst](docs/spaces.rst)
 
 ## Community
 
