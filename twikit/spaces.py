@@ -1248,6 +1248,13 @@ class SpaceVoiceSession:
             )
         else:
             await self.janus.join_as_subscriber(streams or [])
+            # A listener still needs an audio transceiver or createOffer()
+            # produces an SDP with no media section and Janus answers 465
+            # (Missing mandatory lines).
+            try:
+                self.pc.addTransceiver('audio', direction='recvonly')
+            except Exception:
+                pass
             await asyncio.sleep(0.2)
             offer = await self.pc.createOffer()
             await self.pc.setLocalDescription(offer)
