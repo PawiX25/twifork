@@ -1590,7 +1590,9 @@ class Spaces:
         }
         await self.proxsee.login(create_user=True)
         resp = await self.proxsee.create_broadcast(metadata)
-        if auto_publish:
+        # Scheduled spaces have no Janus room yet — skip the live-publish
+        # dance (webrtc_gw_url is absent and Janus create() would crash).
+        if auto_publish and not sst:
             broadcast = resp.get('broadcast') or {}
             broadcast_id = broadcast.get('id') or resp.get('broadcast_id')
             # A live publish needs a real Janus room + publisher registration
@@ -1686,9 +1688,16 @@ class Spaces:
         await self.proxsee.cancel_scheduled_space(broadcast_id)
 
     async def get_scheduled_spaces(self) -> list[dict]:
+        """List your scheduled Spaces. Each item is the broadcast info
+        dict (id, state='NOT_STARTED', scheduled_start, media_key, ...)."""
         await self.proxsee.login(create_user=True)
         resp = await self.proxsee.get_scheduled_spaces()
-        return (resp.get('broadcasts') or []) if isinstance(resp, dict) else []
+        broadcasts = (resp.get('broadcasts') or []) if isinstance(resp, dict) else []
+        out = []
+        for b in broadcasts:
+            if isinstance(b, dict):
+                out.append(b.get('broadcast') or b)
+        return out
 
     # -- join / speak ------------------------------------------------------
 
