@@ -2155,8 +2155,9 @@ class Spaces:
 
     async def associate_tweet_with_broadcast(
         self, space_id: str, tweet_id: str, tweet_external: bool = False
-    ) -> None:
-        await self.proxsee.associate_tweet_with_broadcast(
+    ) -> dict:
+        """Link a tweet to the broadcast (proxsee associateTweetWithBroadcast)."""
+        return await self.proxsee.associate_tweet_with_broadcast(
             space_id, tweet_id, tweet_external
         )
 
