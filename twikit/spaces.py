@@ -1717,6 +1717,35 @@ class Spaces:
 
     # -- join / speak ------------------------------------------------------
 
+    async def _ensure_chatman(self, space: Space | str) -> str:
+        """Resolve the Space's chat token and make sure chatman is
+        initialized. Returns the Space id."""
+        if not isinstance(space, Space):
+            space = await self.get_space(space)
+        space_id = space.id
+        if not space_id:
+            raise SpaceError('Space has no id')
+        chat_token = None
+        if space.media_key:
+            try:
+                stream = await self.get_stream(space.media_key)
+                chat_token = stream.chat_token
+            except Exception:
+                chat_token = None
+        chat_token = chat_token or space.chat.get('chat_token') or None
+        if not chat_token:
+            raise SpaceError('could not resolve chat token for space')
+        # The raw chat token from live_video_stream/status must be
+        # exchanged via accessChat for the chatman access token (sending
+        # the raw token makes chatman reply `invalid secretvalue`).
+        try:
+            exchanged = await self.proxsee.access_chat(chat_token)
+            chat_token = exchanged.get('access_token') or chat_token
+        except SpaceError:
+            pass
+        await self.chatman.initialize(chat_token)
+        return space_id
+
     async def join(
         self,
         space: Space | str,
@@ -1732,29 +1761,7 @@ class Spaces:
         The broadcast_id used here is the X space id (AudioSpaceById
         `rest_id`); the chatman endpoint maps it to the proxsee broadcast.
         """
-        if not isinstance(space, Space):
-            space = await self.get_space(space)
-        space_id = space.id
-        if not space_id:
-            raise SpaceError('Space has no id')
-        chat_token = None
-        if space.media_key:
-            stream = await self.get_stream(space.media_key)
-            chat_token = stream.chat_token
-        if not chat_token:
-            # fall back to the chat object inside AudioSpaceById payload
-            chat_token = space.chat.get('chat_token') or None
-        if not chat_token:
-            raise SpaceError('could not resolve chat token for space')
-        # The raw chat token from live_video_stream/status must be
-        # exchanged via accessChat for the chatman access token (sending
-        # the raw token makes chatman reply `invalid secretvalue`).
-        try:
-            exchanged = await self.proxsee.access_chat(chat_token)
-            chat_token = exchanged.get('access_token') or chat_token
-        except SpaceError:
-            pass
-        await self.chatman.initialize(chat_token)
+        space_id = await self._ensure_chatman(space)
         return await self.chatman.join_as_speaker(
             space_id,
             join_as_admin=join_as_admin or as_speaker,
@@ -2076,12 +2083,14 @@ class Spaces:
     async def reject(self, session_uuid: str) -> None:
         await self.chatman.reject_request(session_uuid)
 
-    async def request_to_speak(self, space_id: str) -> str:
+    async def request_to_speak(self, space: Space | str) -> str:
         """
         Ask to become a speaker in a Space you joined as a listener.
         Returns the session_uuid (the chatman response carries it; it is
-        what the host approves via :meth:`approve`).
+        what the host approves via :meth:`approve`). Initializes chatman
+        itself, so it can be used standalone after join().
         """
+        space_id = await self._ensure_chatman(space)
         resp = await self.chatman.submit_speaker_request(space_id)
         suuid = resp.get('session_uuid')
         if not suuid:

@@ -138,6 +138,16 @@ Tweet sharing (verified live):
 * ``associate_tweet_with_broadcast`` (proxsee) links a tweet to the
   broadcast — returns ``{"success": true}``.
 
+Speaking flow (measured):
+
+* ``request_to_speak``/``cancel_speaker_request`` work standalone
+  (chatman is initialized internally) on Spaces that require approval
+  (``conversation_controls=0``); on ``=2`` (everyone) ``request_to_speak``
+  403s because it is unnecessary.
+* ``raise_hand``/``lower_hand`` (emoji reaction endpoints) return 403 for
+  regular accounts — the endpoints appear restricted/deprecated on X's
+  side; the speaker-request flow above is the supported path.
+
 A full working example lives in ``examples/spaces.py``.
 
 WebRTC voice notes (learned the hard way against the production SFU):
