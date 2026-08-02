@@ -2071,16 +2071,61 @@ class Spaces:
 
     # -- moderation shortcuts ----------------------------------------------
 
-    async def mute_speaker(self, space_id: str, session_uuid: str) -> None:
-        await self.chatman.mute_speaker(session_uuid, space_id)
+    async def mute_space(self, space_id: str) -> dict:
+        """Mute the whole Space (only the host can)."""
+        await self._ensure_chatman(space_id)
+        return await self.chatman.mute_space(space_id)
 
-    async def unmute_speaker(self, space_id: str, session_uuid: str) -> None:
-        await self.chatman.unmute_speaker(session_uuid, space_id)
+    async def unmute_space(self, space_id: str) -> dict:
+        """Unmute the whole Space (only the host can)."""
+        await self._ensure_chatman(space_id)
+        return await self.chatman.unmute_space(space_id)
 
-    async def approve(self, session_uuid: str) -> None:
+    async def set_space_settings(
+        self, space_id: str, conversation_controls: int
+    ) -> dict:
+        """Change who can speak: 0=request/approval, 1=followed, 2=everyone."""
+        await self._ensure_chatman(space_id)
+        return await self.chatman.set_space_settings(
+            space_id, conversation_controls
+        )
+
+    async def add_admin(
+        self, space_id: str, user_id: str, session_uuid: str = ''
+    ) -> dict:
+        """Promote a participant to co-host."""
+        await self._ensure_chatman(space_id)
+        return await self.chatman.add_admin(space_id, session_uuid, user_id)
+
+    async def remove_admin(
+        self, space_id: str, user_id: str, session_uuid: str = ''
+    ) -> dict:
+        """Demote a co-host back to a regular participant."""
+        await self._ensure_chatman(space_id)
+        return await self.chatman.remove_admin(space_id, session_uuid, user_id)
+
+    async def mute_speaker(self, space_id: str, session_uuid: str) -> dict:
+        return await self.chatman.mute_speaker(session_uuid, space_id)
+
+    async def unmute_speaker(self, space_id: str, session_uuid: str) -> dict:
+        return await self.chatman.unmute_speaker(session_uuid, space_id)
+
+    async def approve(
+        self, session_uuid: str, space_id: str | None = None
+    ) -> None:
+        """Approve a speaker request. Pass ``space_id`` to let the facade
+        resolve and initialize chatman itself."""
+        if space_id is not None:
+            await self._ensure_chatman(space_id)
         await self.chatman.approve_request(session_uuid)
 
-    async def reject(self, session_uuid: str) -> None:
+    async def reject(
+        self, session_uuid: str, space_id: str | None = None
+    ) -> None:
+        """Reject a speaker request. Pass ``space_id`` to let the facade
+        resolve and initialize chatman itself."""
+        if space_id is not None:
+            await self._ensure_chatman(space_id)
         await self.chatman.reject_request(session_uuid)
 
     async def request_to_speak(self, space: Space | str) -> str:
@@ -2112,7 +2157,7 @@ class Spaces:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                status = await self.chatman.get_call_status(space_id)
+                status = await self.get_call_status(space_id)
             except SpaceError:
                 status = {}
             for guest in status.get('guest_sessions') or []:
@@ -2122,22 +2167,27 @@ class Spaces:
             await asyncio.sleep(interval)
         return None
 
+    async def get_call_status(self, space_id: str) -> dict:
+        """Fetch the call/status snapshot (guest sessions, states, ...)."""
+        await self._ensure_chatman(space_id)
+        return await self.chatman.get_call_status(space_id)
+
     async def remove_participant(
         self, space_id: str, user_ids: list[str]
-    ) -> None:
-        await self.chatman.remove_participant(space_id, user_ids)
+    ) -> dict:
+        return await self.chatman.remove_participant(space_id, user_ids)
 
-    async def raise_hand(self, space_id: str, session_uuid: str) -> None:
-        await self.chatman.raise_hand(session_uuid, space_id)
+    async def raise_hand(self, space_id: str, session_uuid: str) -> dict:
+        return await self.chatman.raise_hand(session_uuid, space_id)
 
-    async def lower_hand(self, space_id: str, session_uuid: str) -> None:
-        await self.chatman.lower_hand(session_uuid, space_id)
+    async def lower_hand(self, space_id: str, session_uuid: str) -> dict:
+        return await self.chatman.lower_hand(session_uuid, space_id)
 
     async def cancel_speaker_request(
         self, space_id: str, session_uuid: str
-    ) -> None:
+    ) -> dict:
         """Withdraw a pending speaker request."""
-        await self.chatman.cancel_speaker_request(space_id, session_uuid)
+        return await self.chatman.cancel_speaker_request(space_id, session_uuid)
 
     async def add_sharing(self, space_id: str, tweet_id: str) -> None:
         """Share a Space with a tweet (adds the tweet to the Space)."""
