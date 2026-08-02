@@ -50,7 +50,7 @@ PERISCOPE_VENDOR_ID = 'm5-proxsee-login-a2011357b73e'
 DEFAULT_SPACE_METADATA = {
     'app_component': 'audio-room',
     'content_type': 'visual_audio',
-    'conversation_controls': 0,   # 0=invited only, 1=followed, 2=everyone
+    'conversation_controls': 0,   # 0=request/approval needed to speak, 2=everyone (measured)
     'description': '',
     'height': 1080,
     'is_360': False,
@@ -695,10 +695,13 @@ class ChatmanApi:
             'broadcast_id': broadcast_id,
         })
 
-    async def raise_hand(self, session_uuid: str, broadcast_id: str) -> dict:
+    async def raise_hand(
+        self, session_uuid: str, broadcast_id: str, emoji: str = '✋'
+    ) -> dict:
         return await self._post('audiospace/raiseHand', {
             'session_uuid': session_uuid,
             'broadcast_id': broadcast_id,
+            'emoji': emoji,
         })
 
     async def lower_hand(self, session_uuid: str, broadcast_id: str) -> dict:
@@ -2114,6 +2117,12 @@ class Spaces:
 
     async def lower_hand(self, space_id: str, session_uuid: str) -> None:
         await self.chatman.lower_hand(session_uuid, space_id)
+
+    async def cancel_speaker_request(
+        self, space_id: str, session_uuid: str
+    ) -> None:
+        """Withdraw a pending speaker request."""
+        await self.chatman.cancel_speaker_request(space_id, session_uuid)
 
     async def add_sharing(self, space_id: str, tweet_id: str) -> None:
         """Share a Space with a tweet (adds the tweet to the Space)."""
