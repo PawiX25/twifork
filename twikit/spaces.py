@@ -1959,8 +1959,13 @@ class Spaces:
             space = await self.get_space(space)
         chat_token = None
         if space.media_key:
-            stream = await self.get_stream(space.media_key)
-            chat_token = stream.chat_token
+            try:
+                stream = await self.get_stream(space.media_key)
+                chat_token = stream.chat_token
+            except Exception:
+                # ended spaces 404 on live_video_stream/status; fall back
+                # to the chat token embedded in the AudioSpaceById payload
+                chat_token = None
         chat_token = chat_token or space.chat.get('chat_token')
         if not chat_token:
             raise SpaceError('could not resolve chat token for space')
