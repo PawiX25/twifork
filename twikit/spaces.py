@@ -468,6 +468,14 @@ class ProxseeApi:
     def twitter_screen_name(self) -> str | None:
         return (self._user or {}).get('twitter_screen_name')
 
+    @property
+    def twitter_id(self) -> str | None:
+        return (self._user or {}).get('twitter_id')
+
+    @property
+    def display_name(self) -> str | None:
+        return (self._user or {}).get('display_name')
+
     # -- broadcast lifecycle -----------------------------------------------
 
     async def create_broadcast(self, metadata: dict) -> dict:
@@ -1336,7 +1344,9 @@ class SpaceChat:
         """Resolve chat access via proxsee and (if websockets is available
         and the Space is live) open the live WebSocket. Replays are
         read-only: history works, the WS is not offered."""
-        data = await self._proxsee.access_chat_public(self.chat_token)
+        # The web client uses accessChat (NOT accessChatPublic) — public
+        # access comes back read_only and cannot send messages.
+        data = await self._proxsee.access_chat(self.chat_token)
         self.endpoint = data.get('endpoint') or self.endpoint
         self.room_id = data.get('room_id') or self.room_id
         self.access_token = data.get('access_token') or self.access_token
@@ -1411,13 +1421,47 @@ class SpaceChat:
                 'chat is read-only for this access level (replay or '
                 'non-participant)'
             )
-        # Shape used by the web client chatman (Periscope chat protocol).
-        payload = {
-            'type': 'message',
-            'body': {'body': text, 'sender': {}},
-            'v': 1,
+        # Shape used by the web client chatman (Periscope chat protocol):
+        # an outer {payload, kind: 1 Chat} frame whose payload is
+        # {kind: 1, room, lang: 'en', body, sender, timestamp}.
+        import time as _time
+        import uuid as _uuid
+        from datetime import datetime, timezone
+        now_ms = int(_time.time() * 1000)
+        ntp = 1e9 * ((now_ms / 1000) + 2208988800)
+        sender = {
+            'user_id': self._proxsee.periscope_user_id or '',
+            'twitter_id': self._proxsee.twitter_id or '',
+            'username': self._proxsee.twitter_screen_name or '',
+            'display_name': self._proxsee.display_name or '',
+            'participant_index': 0,
         }
-        await self._ws.send(json.dumps(payload))
+        body = {
+            'body': text,
+            'displayName': sender['display_name'],
+            'ntpForBroadcasterFrame': ntp,
+            'ntpForLiveFrame': ntp,
+            'participant_index': 0,
+            'programDateTime': datetime.now(timezone.utc).isoformat(),
+            'remoteID': sender['user_id'],
+            'timestamp': now_ms,
+            'type': 1,  # Chat (X8 message type enum — numeric, not string)
+            'username': sender['username'] or '',
+            'uuid': str(_uuid.uuid4()),
+            'v': 2,
+        }
+        frame = {
+            'payload': json.dumps({
+                'kind': 1,
+                'room': self.room_id,
+                'lang': 'en',
+                'body': json.dumps(body),
+                'sender': sender,
+                'timestamp': now_ms,
+            }),
+            'kind': 1,
+        }
+        await self._ws.send(json.dumps(frame))
 
     async def close(self):
         if self._ws is not None:
@@ -2042,21 +2086,26 @@ class Spaces:
     async def lower_hand(self, space_id: str, session_uuid: str) -> None:
         await self.chatman.lower_hand(session_uuid, space_id)
 
-    async def add_sharing(
-        self, space_id: str, user_ids: list[str]
-    ) -> None:
-        await self._client.gql.audio_space_add_sharing(space_id, user_ids)
+    async def add_sharing(self, space_id: str, tweet_id: str) -> None:
+        """Share a Space with a tweet (adds the tweet to the Space)."""
+        await self._client.gql.audio_space_add_sharing(space_id, tweet_id)
 
-    async def delete_sharing(
-        self, space_id: str, user_ids: list[str]
-    ) -> None:
-        await self._client.gql.audio_space_delete_sharing(space_id, user_ids)
+    async def delete_sharing(self, space_id: str, sharing_id: str) -> None:
+        """Remove a tweet sharing from the Space (see add_sharing)."""
+        await self._client.gql.audio_space_delete_sharing(space_id, sharing_id)
 
     async def subscribe_scheduled(self, space_id: str) -> None:
         await self._client.gql.subscribe_to_scheduled_space(space_id)
 
     async def unsubscribe_scheduled(self, space_id: str) -> None:
         await self._client.gql.unsubscribe_from_scheduled_space(space_id)
+
+    async def associate_tweet_with_broadcast(
+        self, space_id: str, tweet_id: str, tweet_external: bool = False
+    ) -> None:
+        await self.proxsee.associate_tweet_with_broadcast(
+            space_id, tweet_id, tweet_external
+        )
 
     async def aclose(self) -> None:
         await self._http.aclose()

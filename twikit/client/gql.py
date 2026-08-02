@@ -804,21 +804,19 @@ class GQLClient:
     async def browse_space_topics(self):
         return await self.gql_get(Endpoint.BROWSE_SPACE_TOPICS, {})
 
-    async def audio_space_add_sharing(self, space_id, twitter_user_ids, sharing_type='Twitter'):
+    async def audio_space_add_sharing(self, space_id, tweet_id):
         variables = {
-            'id': space_id,
-            'twitterUserIds': twitter_user_ids,
-            'sharingType': sharing_type
+            'audio_space_id': space_id,
+            'sharing': {'shared_tweet': {'tweet_id': tweet_id}},
         }
         return await self.gql_post(
             Endpoint.AUDIO_SPACE_ADD_SHARING, variables
         )
 
-    async def audio_space_delete_sharing(self, space_id, twitter_user_ids, sharing_type='Twitter'):
+    async def audio_space_delete_sharing(self, space_id, sharing_id):
         variables = {
-            'id': space_id,
-            'twitterUserIds': twitter_user_ids,
-            'sharingType': sharing_type
+            'audio_space_id': space_id,
+            'sharing_id': sharing_id,
         }
         return await self.gql_post(
             Endpoint.AUDIO_SPACE_DELETE_SHARING, variables
