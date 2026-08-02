@@ -1677,6 +1677,14 @@ class Spaces:
             chat_token = space.chat.get('chat_token') or None
         if not chat_token:
             raise SpaceError('could not resolve chat token for space')
+        # The raw chat token from live_video_stream/status must be
+        # exchanged via accessChat for the chatman access token (sending
+        # the raw token makes chatman reply `invalid secretvalue`).
+        try:
+            exchanged = await self.proxsee.access_chat(chat_token)
+            chat_token = exchanged.get('access_token') or chat_token
+        except SpaceError:
+            pass
         await self.chatman.initialize(chat_token)
         return await self.chatman.join_as_speaker(
             space_id,
@@ -1691,6 +1699,7 @@ class Spaces:
         on_audio_track=None,
         audio_track=None,
         ice_servers: list[dict] | None = None,
+        session_uuid: str | None = None,
         **join_kwargs,
     ) -> SpaceVoiceSession:
         """
@@ -1703,11 +1712,16 @@ class Spaces:
         initial SDP offer. ``on_audio_track`` (legacy) is a callback
         receiving the session and returning a track, added right after the
         first offer (triggers a renegotiation).
+
+        Pass ``session_uuid`` to reuse an existing chatman session (e.g.
+        after the host approved your raise-hand request — joining again
+        with a fresh session is not needed and may be rejected).
         """
-        joined = await self.join(space, as_speaker=True, **join_kwargs)
-        session_uuid = joined.get('session_uuid')
+        if session_uuid is None:
+            joined = await self.join(space, as_speaker=True, **join_kwargs)
+            session_uuid = joined.get('session_uuid')
         if not session_uuid:
-            raise SpaceError(f'join returned no session_uuid: {joined}')
+            raise SpaceError(f'no session_uuid for speak() on {space}')
         neg = await self.chatman.negotiate_stream(session_uuid)
         janus_jwt = neg.get('janus_jwt') or neg.get('janusJwt')
         webrtc_gw_url = neg.get('webrtc_gw_url') or neg.get('webrtcGwUrl')
@@ -1738,7 +1752,7 @@ class Spaces:
         await session.connect(
             ice_servers,
             as_publisher=True,
-            create_room=True,
+            create_room=False,
             audio_track=audio_track,
         )
         # Host/speaker bookkeeping that the web client performs right after
@@ -1979,6 +1993,43 @@ class Spaces:
 
     async def reject(self, session_uuid: str) -> None:
         await self.chatman.reject_request(session_uuid)
+
+    async def request_to_speak(self, space_id: str) -> str:
+        """
+        Ask to become a speaker in a Space you joined as a listener.
+        Returns the session_uuid (the chatman response carries it; it is
+        what the host approves via :meth:`approve`).
+        """
+        resp = await self.chatman.submit_speaker_request(space_id)
+        suuid = resp.get('session_uuid')
+        if not suuid:
+            raise SpaceError(f'submit speaker request returned no session_uuid: {resp}')
+        return suuid
+
+    async def wait_for_speaker(
+        self,
+        space_id: str,
+        session_uuid: str,
+        timeout: float = 120.0,
+        interval: float = 3.0,
+    ) -> dict | None:
+        """
+        Poll call/status until the session becomes a speaker (the host
+        approved the request). Returns the guest session dict, or None
+        on timeout. The web client uses the same call/status endpoint.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                status = await self.chatman.get_call_status(space_id)
+            except SpaceError:
+                status = {}
+            for guest in status.get('guest_sessions') or []:
+                if guest.get('session_uuid') == session_uuid and \
+                        guest.get('session_state') == 4:
+                    return guest
+            await asyncio.sleep(interval)
+        return None
 
     async def remove_participant(
         self, space_id: str, user_ids: list[str]
