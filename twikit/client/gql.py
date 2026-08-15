@@ -424,7 +424,7 @@ class GQLClient:
         }
         if cursor is not None:
             variables['cursor'] = cursor
-        return await self.gql_post(Endpoint.HOME_TIMELINE, variables, FEATURES)
+        return await self.gql_get(Endpoint.HOME_TIMELINE, variables, FEATURES)
 
     async def home_latest_timeline(self, count, seen_tweet_ids, cursor):
         variables = {
@@ -437,7 +437,7 @@ class GQLClient:
         }
         if cursor is not None:
             variables['cursor'] = cursor
-        return await self.gql_post(Endpoint.HOME_LATEST_TIMELINE, variables, FEATURES)
+        return await self.gql_get(Endpoint.HOME_LATEST_TIMELINE, variables, FEATURES)
 
     async def favorite_tweet(self, tweet_id):
         variables = {'tweet_id': tweet_id}
