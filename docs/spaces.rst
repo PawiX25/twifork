@@ -152,9 +152,10 @@ Speaking flow (measured):
   (chatman is initialized internally) on Spaces that require approval
   (``conversation_controls=0``); on ``=2`` (everyone) ``request_to_speak``
   403s because it is unnecessary.
-* ``raise_hand``/``lower_hand`` (emoji reaction endpoints) return 403 for
-  regular accounts — the endpoints appear restricted/deprecated on X's
-  side; the speaker-request flow above is the supported path.
+* ``raise_hand``/``lower_hand`` are role-dependent emoji reaction
+  endpoints. Ordinary listener sessions return 403, while approved active
+  speaker sessions can raise and lower a hand successfully. They do not
+  replace the speaker-request flow above.
 * A host can mute an active speaker. X deliberately refuses a host-side
   ``unmute_speaker`` with 403; the speaker must call it on their own session
   to turn their microphone back on. Both directions were verified live.
@@ -168,13 +169,13 @@ A full working example lives in ``examples/spaces.py``.
 Multi-space operation (verified live):
 
 * One account can participate in several Spaces at once, even from a
-  single ``Client`` instance: ``join()`` and ``request_to_speak()``
-  return a distinct ``session_uuid`` per Space, and the host sees the
-  guest request on each Space's ``get_call_status()``.
-* Simultaneous *speaking* works too: after the host approves both
-  requests, ``speak()`` can publish to two Spaces at the same time (two
-  independent Janus rooms); both sessions stay at ICE ``completed``.
-  Measured with two Spaces, one account, ~10s+ hold.
+  single ``Client`` instance: ``join()`` and ``request_to_speak()`` return
+  a distinct ``session_uuid`` per Space, and the host sees the guest request
+  in each Space's ``get_call_status()``.
+* Simultaneous listening and speaking work too: one client can receive
+  audio from multiple Spaces or publish to multiple independent Janus rooms
+  at the same time. Keep each returned :class:`SpaceVoiceSession` open for
+  as long as that Space should remain connected.
 * ``get_space().participants`` can lag behind real membership — use
   ``get_call_status()`` for authoritative participant/request state.
 
