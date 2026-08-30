@@ -30,6 +30,10 @@ setup(
     ],
     extras_require={
         'impersonate': ['curl_cffi>=0.7,<0.8'],
+        # Spaces voice (WebRTC) + live chat WebSocket. Everything else in the
+        # Spaces API (metadata, create/end, HLS listening, chat history)
+        # works without these.
+        'spaces': ['aiortc', 'websockets'],
     },
     # The floor is 3.10, not 3.8: `anext()` is a 3.10 builtin and the header
     # merges use the 3.9 dict `|` operator. Declaring 3.8 let pip install on

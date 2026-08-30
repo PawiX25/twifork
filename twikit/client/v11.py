@@ -51,6 +51,12 @@ class Endpoint:
     LIVE_PIPELINE_EVENTS = f'https://api.{DOMAIN}/live_pipeline/events'
     LIVE_PIPELINE_UPDATE_SUBSCRIPTIONS = f'https://api.{DOMAIN}/1.1/live_pipeline/update_subscriptions'
     USER_STATE = f'https://api.{DOMAIN}/help-center/forms/api/prod/user_state.json'
+    # Space stream status (HLS/WebRTC source + chat token). `media_key` is
+    # the `{twitter_user_id}_{broadcast_id}` key from AudioSpaceById metadata.
+    LIVE_VIDEO_STREAM_STATUS = f'https://{DOMAIN}/i/api/1.1/live_video_stream/status/{{}}'
+    # Live chat as a line-delimited HTTP stream (used by the web client's
+    # live-chat sidebar; simpler than the chatman WebSocket).
+    LIVE_CHAT = f'https://{DOMAIN}/live-chat'
 
 
 class V11Client:
@@ -590,6 +596,33 @@ class V11Client:
         headers['LivePipeline-Session'] = session
         return await self.base.post(
             Endpoint.LIVE_PIPELINE_UPDATE_SUBSCRIPTIONS, data=data, headers=headers
+        )
+
+    async def live_video_stream_status(self, media_key):
+        params = {
+            'client': 'web',
+            'use_syndication_guest_id': 'false',
+            'cookie_set_host': 'x.com',
+        }
+        return await self.base.get(
+            Endpoint.LIVE_VIDEO_STREAM_STATUS.format(media_key),
+            params=params,
+            headers=self.base._base_headers
+        )
+
+    async def live_chat(self, broadcast_id, session_id=None, cursor=None):
+        """Open the live-chat HTTP stream for a Space. Returns the raw
+        response; iterate its lines as JSON."""
+        params = {
+            'broadcastId': broadcast_id,
+            'sessionId': session_id or '',
+        }
+        if cursor is not None:
+            params['cursor'] = cursor
+        return await self.base.get(
+            Endpoint.LIVE_CHAT,
+            params=params,
+            headers=self.base._base_headers,
         )
 
     async def user_state(self, **kwargs):

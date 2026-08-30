@@ -30,6 +30,20 @@ from .group import Group, GroupMessage
 from .list import List
 from .message import Conversation, Message
 from .notification import Notification
+from .spaces import (
+    ChatMessage,
+    ChatmanApi,
+    JanusClient,
+    ProxseeApi,
+    Space,
+    SpaceChat,
+    SpaceError,
+    SpaceRole,
+    SpaceState,
+    SpaceStream,
+    SpaceVoiceSession,
+    Spaces,
+)
 from .trend import Trend
 from .tweet import Article, CommunityNote, Poll, ScheduledTweet, Tweet
 from .user import User

@@ -37,6 +37,28 @@ FEATURES = {
     'profile_label_improvements_pcf_label_in_post_enabled': True
 }
 
+# Feature switches the AudioSpaceById query asks for. The web client pins the
+# two `spaces_2022_h2_*` flags plus the standard FEATURES set; the rest are
+# carried over from the current web bundle so the response shape stays
+# identical to what the browser gets.
+AUDIO_SPACE_FEATURES = {
+    **FEATURES,
+    'spaces_2022_h2_spaces_communities': True,
+    'spaces_2022_h2_clipping': True,
+    'responsive_web_grok_analyze_button_fetch_trends_enabled': True,
+    'responsive_web_grok_analyze_post_followups_enabled': True,
+    'responsive_web_grok_show_grok_translated_post': True,
+    'responsive_web_grok_analysis_button_from_backend': True,
+    'responsive_web_grok_image_annotation_enabled': True,
+    'responsive_web_grok_imagine_annotation_enabled': True,
+    'responsive_web_grok_community_note_auto_translation_is_enabled': True,
+    'content_disclosure_indicator_enabled': True,
+    'content_disclosure_ai_generated_indicator_enabled': True,
+    'post_ctas_fetch_enabled': True,
+    'rweb_cashtags_enabled': True,
+}
+
+
 USER_FEATURES = {
     'hidden_profile_likes_enabled': True,
     'hidden_profile_subscriptions_enabled': True,
