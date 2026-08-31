@@ -1460,6 +1460,7 @@ class SpaceChat:
         self.access_token = access_token
         self.read_only = False
         self._ws = None
+        self._ws_error: Exception | None = None
 
     async def connect(self) -> 'SpaceChat':
         """Resolve chat access via proxsee and (if websockets is available
@@ -1495,11 +1496,39 @@ class SpaceChat:
                     }),
                     'kind': 2,
                 }))
-            except ImportError:
-                pass  # history-only mode
-            except Exception:
-                pass  # WS not offered (replay) — history still works
+            except ImportError as exc:
+                self._ws_error = exc  # history-only mode
+            except Exception as exc:
+                # Replays and temporarily unavailable live-chat gateways
+                # can still use HTTP history. Preserve the actual WebSocket
+                # failure so listen()/send() do not misreport a missing
+                # optional dependency.
+                self._ws_error = exc
+                if self._ws is not None:
+                    try:
+                        await self._ws.close()
+                    except Exception:
+                        pass
+                    self._ws = None
         return self
+
+    def _require_live_websocket(self, action: str) -> None:
+        if self._ws is not None:
+            return
+        if isinstance(self._ws_error, ImportError):
+            raise SpaceError(
+                f'{action} requires the optional `websockets` package; '
+                'install it with: pip install websockets'
+            ) from self._ws_error
+        if self._ws_error is not None:
+            raise SpaceError(
+                f'{action} is unavailable because the live-chat WebSocket '
+                f'connection failed: {self._ws_error}'
+            ) from self._ws_error
+        raise SpaceError(
+            f'{action} is unavailable because this Space did not offer a '
+            'live-chat WebSocket (replays are history-only)'
+        )
 
     async def history(
         self, cursor: str | None = None, limit: int = 1000
@@ -1514,11 +1543,7 @@ class SpaceChat:
 
     async def listen(self) -> AsyncIterator[ChatMessage]:
         """Yield chat messages as they arrive (requires `websockets`)."""
-        if self._ws is None:
-            raise SpaceError(
-                'live chat requires the optional `websockets` package; '
-                'install it with: pip install websockets'
-            )
+        self._require_live_websocket('live chat')
         async for raw in self._ws:
             try:
                 data = json.loads(raw)
@@ -1532,16 +1557,12 @@ class SpaceChat:
     async def send(self, text: str) -> None:
         """Send a chat message (requires `websockets`). Public chat access is
         read-only for non-participants; sending raises SpaceError then."""
-        if self._ws is None:
-            raise SpaceError(
-                'sending chat requires the optional `websockets` package; '
-                'install it with: pip install websockets'
-            )
         if self.read_only:
             raise SpaceError(
                 'chat is read-only for this access level (replay or '
                 'non-participant)'
             )
+        self._require_live_websocket('sending chat')
         # Shape used by the web client chatman (Periscope chat protocol):
         # an outer {payload, kind: 1 Chat} frame whose payload is
         # {kind: 1, room, lang: 'en', body, sender, timestamp}.
