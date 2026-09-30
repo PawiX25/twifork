@@ -38,6 +38,8 @@ class Endpoint:
     FRIENDS_LIST = f'https://api.{DOMAIN}/1.1/friends/list.json'
     FOLLOWERS_IDS = f'https://api.{DOMAIN}/1.1/followers/ids.json'
     UPDATE_PROFILE = f'https://api.{DOMAIN}/1.1/account/update_profile.json'
+    PIN_TWEET = f'https://api.{DOMAIN}/1.1/account/pin_tweet.json'
+    UNPIN_TWEET = f'https://api.{DOMAIN}/1.1/account/unpin_tweet.json'
     FRIENDS_IDS = f'https://api.{DOMAIN}/1.1/friends/ids.json'
     DM_NEW = f'https://{DOMAIN}/i/api/1.1/dm/new2.json'
     DM_INBOX = f'https://{DOMAIN}/i/api/1.1/dm/inbox_initial_state.json'
@@ -119,6 +121,29 @@ class V11Client:
         return await self.base.get(
             Endpoint.SETTINGS,
             headers=self.base._base_headers
+        )
+
+    async def pin_tweet(self, tweet_id):
+        # The legacy pin endpoints take the tweet id under `id` (not
+        # `tweet_id`) and answer error 38 otherwise.
+        headers = self.base._base_headers | {
+            'content-type': 'application/x-www-form-urlencoded'
+        }
+        return await self.base.post(
+            Endpoint.PIN_TWEET,
+            data={'id': tweet_id},
+            headers=headers
+        )
+
+    async def unpin_tweet(self, tweet_id):
+        # See pin_tweet for the `id` parameter quirk.
+        headers = self.base._base_headers | {
+            'content-type': 'application/x-www-form-urlencoded'
+        }
+        return await self.base.post(
+            Endpoint.UNPIN_TWEET,
+            data={'id': tweet_id},
+            headers=headers
         )
 
     async def upload_media(self, method, is_long_video: bool, *args, **kwargs):
