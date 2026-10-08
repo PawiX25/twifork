@@ -65,6 +65,7 @@ day or until the account subscribes to Premium.
 | get_notifications[type="All"]         | 180   | notifications/all.json              |
 | get_notifications[type="Mentions"]    | 180   | notifications/mentions.json         |
 | get_notifications[type="Verified"]    | 180   | notifications/verified.json         |
+| pin_tweet                             | 187   | account/pin_tweet.json              |
 | get_retweeters                        | 500   | Retweeters                          |
 | search_tweet, search_user             | 50    | SearchTimeline                      |
 | send_dm                               | 187   | dm/new2.json                        |
@@ -77,6 +78,7 @@ day or until the account subscribes to Premium.
 | unfavorite_tweet                      | -     | UnfavoriteTweet                     |
 | -                                     | -     | UnmuteList                          |
 | unmute_user                           | 187   | mutes/users/destroy.json            |
+| unpin_tweet                           | 187   | account/unpin_tweet.json            |
 | edit_list                             | -     | UpdateList                          |
 | upload_media                          | -     | media/upload.json                   |
 | get_user_by_id                        | 500   | UserByRestId                        |

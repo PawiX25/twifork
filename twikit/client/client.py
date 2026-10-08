@@ -3530,6 +3530,71 @@ class Client:
         response, _ = await self.v11.destroy_friendships(user_id)
         return User(self, build_user_data(response))
 
+    async def pin_tweet(self, tweet_id: str) -> Response:
+        """
+        Pins a tweet to the logged-in account's profile.
+
+        A profile holds a single pinned tweet, so pinning another one
+        replaces the current pin. Only the account's own tweets can be
+        pinned - for anybody else's X answers that no status was found.
+
+        Parameters
+        ----------
+        tweet_id : :class:`str`
+            The ID of the tweet to be pinned.
+
+        Raises
+        ------
+        :exc:`NotFound` : If the tweet does not exist or belongs to another
+            account.
+
+        Returns
+        -------
+        :class:`httpx.Response`
+            Response returned from twitter api.
+
+        Examples
+        --------
+        >>> tweet_id = '...'
+        >>> await client.pin_tweet(tweet_id)
+
+        See Also
+        --------
+        .unpin_tweet
+        """
+        _, response = await self.v11.pin_tweet(tweet_id)
+        return response
+
+    async def unpin_tweet(self, tweet_id: str) -> Response:
+        """
+        Removes the pinned tweet from the logged-in account's profile.
+
+        Passing a tweet that is not the pinned one succeeds without changing
+        anything. Deleting a pinned tweet leaves its ID in
+        :attr:`User.pinned_tweet_ids`; unpinning that ID clears it.
+
+        Parameters
+        ----------
+        tweet_id : :class:`str`
+            The ID of the tweet to be unpinned.
+
+        Returns
+        -------
+        :class:`httpx.Response`
+            Response returned from twitter api.
+
+        Examples
+        --------
+        >>> tweet_id = '...'
+        >>> await client.unpin_tweet(tweet_id)
+
+        See Also
+        --------
+        .pin_tweet
+        """
+        _, response = await self.v11.unpin_tweet(tweet_id)
+        return response
+
     async def block_user(self, user_id: str) -> User:
         """
         Blocks a user.
