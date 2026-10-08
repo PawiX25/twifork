@@ -3534,10 +3534,19 @@ class Client:
         """
         Pins a tweet to the logged-in account's profile.
 
+        A profile holds a single pinned tweet, so pinning another one
+        replaces the current pin. Only the account's own tweets can be
+        pinned - for anybody else's X answers that no status was found.
+
         Parameters
         ----------
         tweet_id : :class:`str`
             The ID of the tweet to be pinned.
+
+        Raises
+        ------
+        :exc:`NotFound` : If the tweet does not exist or belongs to another
+            account.
 
         Returns
         -------
@@ -3559,6 +3568,10 @@ class Client:
     async def unpin_tweet(self, tweet_id: str) -> Response:
         """
         Removes the pinned tweet from the logged-in account's profile.
+
+        Passing a tweet that is not the pinned one succeeds without changing
+        anything. Deleting a pinned tweet leaves its ID in
+        :attr:`User.pinned_tweet_ids`; unpinning that ID clears it.
 
         Parameters
         ----------
