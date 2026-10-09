@@ -20,9 +20,12 @@ day or until the account subscribes to Premium.
 187-request window, but that is not what X enforces: each of the two is cut
 off with `429` after **100 calls** in the window, counted separately - with
 `unpin_tweet` blocked, `pin_tweet` still goes through - while the headers
-still report ~85 requests left. Calls that fail with `NotFound` count too.
-The block lifts when the window reported in `x-rate-limit-reset` ends.
-Measured on three accounts.
+still report 87 requests left. Calls that fail with `NotFound` count too, and
+going through `x.com/i/api` instead of `api.x.com` hits the same block. The
+window is fixed: it starts with the first call and the block lifts exactly
+when the window reported in `x-rate-limit-reset` ends. The pace makes no
+difference - back-to-back calls and one call every 8 seconds were both cut off
+at the 101st. Measured on nine accounts over 24 windows, every one at 100.
 
 | Functions                             | Limit | Endpoint                            |
 |---------------------------------------|-------|-------------------------------------|
