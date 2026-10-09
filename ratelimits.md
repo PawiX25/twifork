@@ -16,6 +16,14 @@ each was cut off after **51 posts**, at roughly 70 posts/minute. Reading,
 liking and following keep working - only posting is blocked, until the next
 day or until the account subscribes to Premium.
 
+† `pin_tweet` and `unpin_tweet` answer with rate-limit headers of a shared
+187-request window, but that is not what X enforces: each of the two is cut
+off with `429` after **100 calls** in the window, counted separately - with
+`unpin_tweet` blocked, `pin_tweet` still goes through - while the headers
+still report ~85 requests left. Calls that fail with `NotFound` count too.
+The block lifts when the window reported in `x-rate-limit-reset` ends.
+Measured on three accounts.
+
 | Functions                             | Limit | Endpoint                            |
 |---------------------------------------|-------|-------------------------------------|
 | add_members_to_group                  | -     | AddParticipantsMutation             |
@@ -65,7 +73,7 @@ day or until the account subscribes to Premium.
 | get_notifications[type="All"]         | 180   | notifications/all.json              |
 | get_notifications[type="Mentions"]    | 180   | notifications/mentions.json         |
 | get_notifications[type="Verified"]    | 180   | notifications/verified.json         |
-| pin_tweet                             | 187   | account/pin_tweet.json              |
+| pin_tweet                             | 100†  | account/pin_tweet.json              |
 | get_retweeters                        | 500   | Retweeters                          |
 | search_tweet, search_user             | 50    | SearchTimeline                      |
 | send_dm                               | 187   | dm/new2.json                        |
@@ -78,7 +86,7 @@ day or until the account subscribes to Premium.
 | unfavorite_tweet                      | -     | UnfavoriteTweet                     |
 | -                                     | -     | UnmuteList                          |
 | unmute_user                           | 187   | mutes/users/destroy.json            |
-| unpin_tweet                           | 187   | account/unpin_tweet.json            |
+| unpin_tweet                           | 100†  | account/unpin_tweet.json            |
 | edit_list                             | -     | UpdateList                          |
 | upload_media                          | -     | media/upload.json                   |
 | get_user_by_id                        | 500   | UserByRestId                        |
