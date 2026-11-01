@@ -98,7 +98,9 @@ class GuestClient:
         self._guest_token: str | None = None  # set when activate method is called
         self.gql = GQLClient(self)
         self.v11 = V11Client(self)
-        self.client_transaction = ClientTransaction()
+        # Guests only ever see the logged-out app, which carries its keys
+        # differently; without this every call died with InvalidSession.
+        self.client_transaction = ClientTransaction(logged_out=True)
 
     async def _send(self, method: str, url: str, **kwargs) -> Response:
         """

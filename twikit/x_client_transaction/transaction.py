@@ -7,6 +7,7 @@ import base64
 import asyncio
 import hashlib
 from typing import Union, List
+from urllib.parse import urljoin
 from functools import reduce
 from ..constants import DOMAIN
 from ..errors import AccountLocked, ClientTransactionError, InvalidSession
@@ -19,6 +20,19 @@ ON_DEMAND_FILE_REGEX = re.compile(
     r""",(\d+):["']ondemand\.s["']""", flags=(re.VERBOSE | re.MULTILINE))
 ON_DEMAND_HASH_PATTERN = r',{}:"([0-9a-f]+)"'
 INDICES_REGEX = re.compile(r"\[(\d+)\],\s*16")
+# Logged-out visitors get a different app (x-web) with no webpack chunk map:
+# its entry script imports startup-dynamic, which lazy-loads the signer
+# sign.o-*.js, and the indices sit in the signer in the same "[n],16" shape.
+LOGGED_OUT_ENTRY_REGEX = re.compile(
+    r"""entryHref\s*=\s*["'](https://abs\.twimg\.com/[^"']+\.js)["']""")
+LOGGED_OUT_ENTRY_FALLBACK_REGEX = re.compile(
+    r"""https://abs\.twimg\.com/[^"'\s]*/entry-client-logged-out-[\w-]+\.js""")
+STARTUP_DYNAMIC_REGEX = re.compile(r"""[\w./-]*startup-dynamic-[\w-]+\.js""")
+SIGNER_REGEX = re.compile(r"""[\w./-]*sign\.o-[\w-]+\.js""")
+# entry script URL -> indices. The signer only changes when the build does,
+# and the build changes the entry URL, so this never goes stale; it spares
+# a guest the 750 KB startup-dynamic download on every reset().
+_logged_out_indices_cache: dict[str, tuple[int, list[int]]] = {}
 
 
 class ClientTransaction:
@@ -32,7 +46,12 @@ class ClientTransaction:
     key_bytes = None
     animation_key = None
 
-    def __init__(self):
+    def __init__(self, logged_out: bool = False):
+        # Whether the logged-out app is an acceptable source of keys. Only
+        # GuestClient wants that: for the logged-in client the logged-out
+        # page means its cookies were rejected, which has to stay an
+        # InvalidSession instead of quietly signing as a guest.
+        self.logged_out = logged_out
         self.home_page_response = None
         self._inited = False
         self._init_lock = None
@@ -145,6 +164,9 @@ class ClientTransaction:
             home_page_response) or self.home_page_response
         response_str = str(response)
         on_demand_file = ON_DEMAND_FILE_REGEX.search(response_str)
+        if not on_demand_file and self.logged_out:
+            return await self.get_logged_out_indices(
+                response_str, session, headers)
         if not on_demand_file:
             # Three unrelated causes used to share one message here, each
             # needing a different fix: refresh the cookies, deal with the
@@ -192,6 +214,52 @@ class ClientTransaction:
             raise ClientTransactionError("Couldn't get KEY_BYTE indices")
         key_byte_indices = list(map(int, key_byte_indices))
         return key_byte_indices[0], key_byte_indices[1:]
+
+    async def get_logged_out_indices(self, response_str, session, headers):
+        """
+        Read the key byte indices for the logged-out app, which loads its
+        signer through entry script -> startup-dynamic -> sign.o instead of
+        the webpack ondemand.s chunk.
+        """
+        entry = LOGGED_OUT_ENTRY_REGEX.search(response_str)
+        entry_url = entry.group(1) if entry else None
+        if entry_url is None:
+            fallback = LOGGED_OUT_ENTRY_FALLBACK_REGEX.search(response_str)
+            entry_url = fallback.group(0) if fallback else None
+        if entry_url is None:
+            raise ClientTransactionError(
+                "x.com served neither the webpack app nor a recognisable "
+                "logged-out app entry script, so the X-Client-Transaction-Id "
+                "handshake cannot be performed (the page layout changed)."
+            )
+        cached = _logged_out_indices_cache.get(entry_url)
+        if cached is not None:
+            return cached[0], list(cached[1])
+
+        async def fetch(url, regex, what):
+            text = (await session.request(
+                method="GET", url=url, headers=headers)).text
+            match = regex.search(text)
+            if not match:
+                raise ClientTransactionError(
+                    f"Couldn't find the {what} reference in {url} (the "
+                    "logged-out app layout changed)."
+                )
+            return text, urljoin(url, match.group(0))
+
+        _, startup_url = await fetch(
+            entry_url, STARTUP_DYNAMIC_REGEX, "startup-dynamic chunk")
+        _, signer_url = await fetch(
+            startup_url, SIGNER_REGEX, "sign.o signer")
+        signer = (await session.request(
+            method="GET", url=signer_url, headers=headers)).text
+        indices = [int(m.group(1)) for m in INDICES_REGEX.finditer(signer)]
+        if len(indices) < 2:
+            raise ClientTransactionError(
+                f"Couldn't get KEY_BYTE indices from the signer {signer_url}"
+            )
+        _logged_out_indices_cache[entry_url] = (indices[0], indices[1:])
+        return indices[0], indices[1:]
 
     def validate_response(self, response: bs4.BeautifulSoup):
         if not isinstance(response, bs4.BeautifulSoup):
