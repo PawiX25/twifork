@@ -4,7 +4,42 @@ import base64
 from typing import Union
 
 
-async def handle_x_migration(session, headers):
+# Headers that only belong on API calls. A browser never sends them when it
+# loads the page, and x.com refuses the page when they are present: with the
+# GraphQL bearer attached it answers 401 with an empty body for live cookies
+# (403, empty, for expired ones) instead of the app shell, so the handshake
+# found no webpack manifest and reported the session as logged out.
+_API_ONLY_HEADERS = frozenset({
+    'authorization',
+    'content-type',
+    'x-csrf-token',
+    'x-guest-token',
+    'x-act-as-user-id',
+    'x-client-transaction-id',
+})
+
+
+def page_headers(headers):
+    """
+    Return a copy of ``headers`` fit for fetching an HTML page: every
+    API-only header (bearer, content-type, csrf, guest token,
+    ``X-Twitter-*``...) is dropped, so passing the client's API headers by
+    mistake still gets the real page.
+    """
+    return {
+        key: value for key, value in (headers or {}).items()
+        if key.lower() not in _API_ONLY_HEADERS
+        and not key.lower().startswith('x-twitter-')
+    }
+
+
+async def fetch_home_page(session, headers):
+    """
+    Fetch the x.com home page, following the twitter.com -> x.com migration
+    hop, and return ``(page, response)``: the parsed page and the response
+    it was parsed from, so callers can tell an empty refusal from a page.
+    """
+    headers = page_headers(headers)
     home_page = None
     migration_redirection_regex = re.compile(
         r"""(http(?:s)?://(?:www\.)?(twitter|x){1}\.com(/x)?/migrate([/?])?tok=[a-zA-Z0-9%\-_]+)+""", re.VERBOSE)
@@ -23,6 +58,11 @@ async def handle_x_migration(session, headers):
         request_payload = {input_field.get("name"): input_field.get("value") for input_field in migration_form.select("input")}
         response = await session.request(method=method, url=url, data=request_payload, headers=headers)
         home_page = bs4.BeautifulSoup(response.content, 'lxml')
+    return home_page, response
+
+
+async def handle_x_migration(session, headers):
+    home_page, _ = await fetch_home_page(session, headers)
     return home_page
 
 

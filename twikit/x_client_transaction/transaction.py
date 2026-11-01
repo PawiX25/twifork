@@ -13,7 +13,7 @@ from ..errors import AccountLocked, ClientTransactionError, InvalidSession
 from .cubic_curve import Cubic
 from .interpolate import interpolate
 from .rotation import convert_rotation_to_matrix
-from .utils import float_to_hex, is_odd, base64_encode, handle_x_migration
+from .utils import float_to_hex, is_odd, base64_encode, fetch_home_page, page_headers
 
 ON_DEMAND_FILE_REGEX = re.compile(
     r""",(\d+):["']ondemand\.s["']""", flags=(re.VERBOSE | re.MULTILINE))
@@ -63,6 +63,11 @@ class ClientTransaction:
         return self._inited
 
     async def init(self, session, headers):
+        # Every request made here fetches a page or a script, never an API
+        # response. Callers passing the client's API headers (bearer
+        # included) used to get an empty 401 from x.com that surfaced as a
+        # misleading "refresh your cookies" InvalidSession.
+        headers = page_headers(headers)
         # Serialise concurrent callers: without this every in-flight request
         # runs its own handshake (N requests -> N home page + ondemand.s fetches).
         if self._init_lock is None:
@@ -72,8 +77,9 @@ class ClientTransaction:
             # flight; see the generation check below.
             while not self._inited:
                 generation = self._generation
-                home_page_response = self.validate_response(
-                    await handle_x_migration(session, headers))
+                page, response = await fetch_home_page(session, headers)
+                self.check_home_page_status(response)
+                home_page_response = self.validate_response(page)
                 # Everything is computed into locals first: partial state must
                 # never be published, otherwise a failure here leaves the
                 # object wedged forever (the caller only re-inits when it sees
@@ -106,6 +112,32 @@ class ClientTransaction:
                 self.key_bytes = key_bytes
                 self.animation_key = animation_key
                 self._inited = True
+
+    def check_home_page_status(self, response) -> None:
+        """
+        Reject a refused home page fetch before it is parsed.
+
+        Expired or missing cookies get a full logged-out page (~45 KB) with
+        status 200, which get_indices() reports as InvalidSession. An error
+        status with an (almost) empty body is a different failure - the
+        request itself was turned away - and must not send users off to
+        re-export cookies that are fine.
+        """
+        status = getattr(response, 'status_code', None)
+        body = getattr(response, 'content', b'') or b''
+        if status is None or status < 400 or len(body) >= 1024:
+            return
+        if b'/account/access' in body:
+            # Leave the locked-account redirect to get_indices().
+            return
+        raise ClientTransactionError(
+            f"x.com refused the home page fetch (HTTP {status}, "
+            f"{len(body)} bytes), so the X-Client-Transaction-Id handshake "
+            "cannot be performed. This is not the logged-out page expired "
+            "cookies get, so refreshing them will not help: the request was "
+            "rejected before any page was served - check the proxy / network "
+            "path, and the headers if you call the handshake yourself."
+        )
 
     async def get_indices(self, home_page_response, session, headers):
         key_byte_indices = []
