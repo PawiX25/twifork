@@ -20,19 +20,25 @@ ON_DEMAND_FILE_REGEX = re.compile(
     r""",(\d+):["']ondemand\.s["']""", flags=(re.VERBOSE | re.MULTILINE))
 ON_DEMAND_HASH_PATTERN = r',{}:"([0-9a-f]+)"'
 INDICES_REGEX = re.compile(r"\[(\d+)\],\s*16")
-# Logged-out visitors get a different app (x-web) with no webpack chunk map:
-# its entry script imports startup-dynamic, which lazy-loads the signer
-# sign.o-*.js, and the indices sit in the signer in the same "[n],16" shape.
-LOGGED_OUT_ENTRY_REGEX = re.compile(
+# x.com now serves everyone the x-web app (Vite) instead of the webpack bundle,
+# so there is no ondemand.s. The entry script imports the chunk that sets the
+# x-client-transaction-id header, which lazy-loads the signer; the indices sit
+# there in the same "[n],16" shape. Chunk names are bare hashes, so the chain
+# is followed by content.
+X_WEB_ENTRY_REGEX = re.compile(
     r"""entryHref\s*=\s*["'](https://abs\.twimg\.com/[^"']+\.js)["']""")
-LOGGED_OUT_ENTRY_FALLBACK_REGEX = re.compile(
-    r"""https://abs\.twimg\.com/[^"'\s]*/entry-client-logged-out-[\w-]+\.js""")
-STARTUP_DYNAMIC_REGEX = re.compile(r"""[\w./-]*startup-dynamic-[\w-]+\.js""")
-SIGNER_REGEX = re.compile(r"""[\w./-]*sign\.o-[\w-]+\.js""")
+X_WEB_ENTRY_FALLBACK_REGEX = re.compile(
+    r"""https://abs\.twimg\.com/[^"'\s]*/entry-client-[\w-]+\.js""")
+X_WEB_STATIC_IMPORT_REGEX = re.compile(
+    r"""(?:from|import)\s*["'](\.{1,2}/[\w./-]+\.js)["']""")
+X_WEB_SIGNER_IMPORT_REGEX = re.compile(
+    r"""import\([`"'](\.{1,2}/[\w./-]+\.js)[`"']\)\.then\(\(?\w+\)?=>\w+\.default\(\)""")
+TRANSACTION_HEADER = "x-client-transaction-id"
+FRAME_ID_REGEX = re.compile(r"loading-x-anim-\d+")
 # entry script URL -> indices. The signer only changes when the build does,
 # and the build changes the entry URL, so this never goes stale; it spares
-# a guest the 750 KB startup-dynamic download on every reset().
-_logged_out_indices_cache: dict[str, tuple[int, list[int]]] = {}
+# the ~3 MB of chunks the lookup walks through on every reset().
+_x_web_indices_cache: dict[str, tuple[int, list[int]]] = {}
 
 
 class ClientTransaction:
@@ -63,7 +69,7 @@ class ClientTransaction:
         """
         Forget the handshake so the next request performs it again.
 
-        The keys come from a webpack bundle X rotates every few days, and
+        The keys come from an app bundle X rotates every few days, and
         they are also tied to the session that fetched them - after swapping
         cookies the old keys keep producing ids X quietly answers 404 to.
         """
@@ -88,7 +94,7 @@ class ClientTransaction:
         # misleading "refresh your cookies" InvalidSession.
         headers = page_headers(headers)
         # Serialise concurrent callers: without this every in-flight request
-        # runs its own handshake (N requests -> N home page + ondemand.s fetches).
+        # runs its own handshake (N requests -> N home page + signer fetches).
         if self._init_lock is None:
             self._init_lock = asyncio.Lock()
         async with self._init_lock:
@@ -164,9 +170,19 @@ class ClientTransaction:
             home_page_response) or self.home_page_response
         response_str = str(response)
         on_demand_file = ON_DEMAND_FILE_REGEX.search(response_str)
-        if not on_demand_file and self.logged_out:
-            return await self.get_logged_out_indices(
-                response_str, session, headers)
+        if not on_demand_file:
+            entry_url = self.find_x_web_entry(response_str)
+            # The logged-out app for a logged-in client means its cookies were
+            # rejected; that is reported as InvalidSession below.
+            if entry_url and (self.logged_out
+                              or 'entry-client-logged-out-' not in entry_url):
+                return await self.get_x_web_indices(entry_url, session, headers)
+            if self.logged_out:
+                raise ClientTransactionError(
+                    "x.com served neither the webpack app nor a recognisable "
+                    "x-web entry script, so the X-Client-Transaction-Id "
+                    "handshake cannot be performed (the page layout changed)."
+                )
         if not on_demand_file:
             # Three unrelated causes used to share one message here, each
             # needing a different fix: refresh the cookies, deal with the
@@ -188,7 +204,7 @@ class ClientTransaction:
                     )
                 raise InvalidSession(
                     "x.com returned the logged-out page shell "
-                    f"({len(response_str)} bytes, no webpack manifest), so the "
+                    f"({len(response_str)} bytes, not the logged-in app), so the "
                     "X-Client-Transaction-Id handshake cannot be performed. "
                     "The cookies are most likely missing, expired or rejected "
                     "- log in again and refresh them."
@@ -215,50 +231,54 @@ class ClientTransaction:
         key_byte_indices = list(map(int, key_byte_indices))
         return key_byte_indices[0], key_byte_indices[1:]
 
-    async def get_logged_out_indices(self, response_str, session, headers):
+    @staticmethod
+    def find_x_web_entry(response_str):
+        """Entry script URL of the x-web app, or None for any other page."""
+        entry = X_WEB_ENTRY_REGEX.search(response_str)
+        if entry:
+            return entry.group(1)
+        fallback = X_WEB_ENTRY_FALLBACK_REGEX.search(response_str)
+        return fallback.group(0) if fallback else None
+
+    async def get_x_web_indices(self, entry_url, session, headers):
         """
-        Read the key byte indices for the logged-out app, which loads its
-        signer through entry script -> startup-dynamic -> sign.o instead of
-        the webpack ondemand.s chunk.
+        Read the key byte indices for the x-web app: entry script -> the
+        chunk that sets the x-client-transaction-id header -> the signer it
+        lazy-loads.
         """
-        entry = LOGGED_OUT_ENTRY_REGEX.search(response_str)
-        entry_url = entry.group(1) if entry else None
-        if entry_url is None:
-            fallback = LOGGED_OUT_ENTRY_FALLBACK_REGEX.search(response_str)
-            entry_url = fallback.group(0) if fallback else None
-        if entry_url is None:
-            raise ClientTransactionError(
-                "x.com served neither the webpack app nor a recognisable "
-                "logged-out app entry script, so the X-Client-Transaction-Id "
-                "handshake cannot be performed (the page layout changed)."
-            )
-        cached = _logged_out_indices_cache.get(entry_url)
+        cached = _x_web_indices_cache.get(entry_url)
         if cached is not None:
             return cached[0], list(cached[1])
 
-        async def fetch(url, regex, what):
-            text = (await session.request(
+        async def get(url):
+            return (await session.request(
                 method="GET", url=url, headers=headers)).text
-            match = regex.search(text)
-            if not match:
-                raise ClientTransactionError(
-                    f"Couldn't find the {what} reference in {url} (the "
-                    "logged-out app layout changed)."
-                )
-            return text, urljoin(url, match.group(0))
 
-        _, startup_url = await fetch(
-            entry_url, STARTUP_DYNAMIC_REGEX, "startup-dynamic chunk")
-        _, signer_url = await fetch(
-            startup_url, SIGNER_REGEX, "sign.o signer")
-        signer = (await session.request(
-            method="GET", url=signer_url, headers=headers)).text
-        indices = [int(m.group(1)) for m in INDICES_REGEX.finditer(signer)]
-        if len(indices) < 2:
+        def indices_of(text):
+            return [int(m.group(1)) for m in INDICES_REGEX.finditer(text)]
+
+        entry = await get(entry_url)
+        chunks = [entry_url] + [
+            urljoin(entry_url, path) for path in
+            dict.fromkeys(X_WEB_STATIC_IMPORT_REGEX.findall(entry))]
+        indices = None
+        for chunk_url in chunks:
+            text = entry if chunk_url == entry_url else await get(chunk_url)
+            if TRANSACTION_HEADER not in text:
+                continue
+            for signer_path in X_WEB_SIGNER_IMPORT_REGEX.findall(text):
+                found = indices_of(await get(urljoin(chunk_url, signer_path)))
+                if len(found) >= 2:
+                    indices = found
+                    break
+            if indices is not None:
+                break
+        if indices is None:
             raise ClientTransactionError(
-                f"Couldn't get KEY_BYTE indices from the signer {signer_url}"
+                f"Couldn't find the X-Client-Transaction-Id signer behind "
+                f"{entry_url} (the x-web app layout changed)."
             )
-        _logged_out_indices_cache[entry_url] = (indices[0], indices[1:])
+        _x_web_indices_cache[entry_url] = (indices[0], indices[1:])
         return indices[0], indices[1:]
 
     def validate_response(self, response: bs4.BeautifulSoup):
@@ -284,7 +304,12 @@ class ClientTransaction:
     def get_frames(self, response=None):
         # loading-x-anim-0...loading-x-anim-3
         response = self.validate_response(response) or self.home_page_response
-        return response.select("[id^='loading-x-anim']")
+        # The x-web page also carries loading-x-anim-css and
+        # loading-x-anim-svgs; counting them shifted every frame index.
+        return [
+            frame for frame in response.select("[id^='loading-x-anim-']")
+            if FRAME_ID_REGEX.fullmatch(frame.get('id', ''))
+        ]
 
     def get_2d_array(self, key_bytes: List[Union[float, int]], response, frames: bs4.ResultSet = None):
         if not frames:

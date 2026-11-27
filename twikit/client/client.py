@@ -862,7 +862,7 @@ class Client:
         """
         Forces the X-Client-Transaction-Id handshake to run again.
 
-        The keys behind that header come from a webpack bundle X rotates every
+        The keys behind that header come from an app bundle X rotates every
         few days, and a client holds them for its whole life - so a
         long-running process eventually signs requests with stale keys and X
         answers sporadic 404s. Calling this is the cheap fix; rebuilding the

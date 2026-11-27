@@ -37,7 +37,7 @@ A 404 that comes and goes for the same call is almost always the
 ``x-client-transaction-id`` handshake, not the endpoint: X enforces the header
 selectively, so an id built from stale keys passes on some operations and is
 rejected on others. The keys are fetched once per client and never refreshed,
-while the ``ondemand.s`` bundle they come from rotates every few days - so a
+while the app bundle they come from rotates every few days - so a
 long-lived process degrades into sporadic 404s. Rebuilding the client makes
 them go away.
 """

@@ -43,7 +43,11 @@ async def fetch_home_page(session, headers):
     home_page = None
     migration_redirection_regex = re.compile(
         r"""(http(?:s)?://(?:www\.)?(twitter|x){1}\.com(/x)?/migrate([/?])?tok=[a-zA-Z0-9%\-_]+)+""", re.VERBOSE)
-    response = await session.request(method="GET", url="https://x.com", headers=headers)
+    # A logged-in visitor is now sent from / to /home with an empty 307, so
+    # the page has to be fetched through the redirect.
+    response = await session.request(
+        method="GET", url="https://x.com", headers=headers,
+        follow_redirects=True)
     home_page = bs4.BeautifulSoup(response.content, 'lxml')
     migration_url = home_page.select_one("meta[http-equiv='refresh']")
     migration_redirection_url = re.search(migration_redirection_regex, str(
