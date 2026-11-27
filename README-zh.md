@@ -44,7 +44,7 @@ pip install git+https://github.com/PawiX25/twifork.git
 
 上游的 PyPI 版本（`twikit==2.3.3`）在 2026 年已经有多处无法使用。twifork 把这些都修好了，下面每一项都链接到对应的上游 Issue。
 
-- **ClientTransaction / `Couldn't get KEY_BYTE indices`** — 按 X 新的 webpack 打包结构更新了 `ondemand.s.js` 的解析，GraphQL 请求重新可用。([#408](https://github.com/d60/twikit/issues/408)、[#409](https://github.com/d60/twikit/issues/409)、[#304](https://github.com/d60/twikit/issues/304))
+- **ClientTransaction / `Couldn't get KEY_BYTE indices`** — 按 X 新的 webpack 打包结构更新了 `ondemand.s.js` 的解析，GraphQL 请求重新可用。此后 X 为所有用户改用 x-web 应用取代了该打包，现在改为从其签名脚本（signer）读取密钥（[twifork#8](https://github.com/PawiX25/twifork/issues/8)）。([#408](https://github.com/d60/twikit/issues/408)、[#409](https://github.com/d60/twikit/issues/409)、[#304](https://github.com/d60/twikit/issues/304))
 - **`SearchTimeline` 和 `friends/list` 上时有时无、且会"卡住"的 `404`** — 计算 `x-client-transaction-id` 的动画密钥时漏掉了 X 的 `frame_time` 取整步骤，导致某些 `Client` 会话在重新创建之前，所有严格校验的请求都会返回 404。修复之后，这种随机 404 就消失了。([#357](https://github.com/d60/twikit/issues/357)、[#397](https://github.com/d60/twikit/issues/397))
 - **可选字段缺失时的 `KeyError`**（`User.__init__` 与 `Client.request`）— 改用 `.get()` 安全读取。([#417](https://github.com/d60/twikit/issues/417))
 - **用户 `name` / `screen_name` 为空**（常见于搜索结果）— X 把 `name`、`screen_name`、`created_at`、头像、位置等字段从 `legacy` 移到了新的子对象，现在新旧两种结构都能读取。
@@ -52,7 +52,7 @@ pip install git+https://github.com/PawiX25/twifork.git
 - **没有可见推文的账户上，`get_user_tweets` 的 `KeyError: 'entries'` / `IndexError`** — 空的、没有游标的时间线会返回空结果，而不再崩溃。([#361](https://github.com/d60/twikit/issues/361)、[#216](https://github.com/d60/twikit/issues/216))
 - **`get_trends` 被弃用、什么都不返回** — 基于 `GenericTimelineById` 重写，并新增了 `get_explore_page()`。([#389](https://github.com/d60/twikit/issues/389))
 - **限流时的 `RecursionError`** — 429 的恢复逻辑不再递归。
-- **`GuestClient.activate()` 的 404** — 游客客户端现在会带上 `User-Agent`，并安全地解析用户字段。([#402](https://github.com/d60/twikit/issues/402)、[#385](https://github.com/d60/twikit/issues/385))
+- **`GuestClient.activate()` 的 404** — 游客客户端现在会带上 `User-Agent`，并安全地解析用户字段。现在会从未登录状态的 x-web 应用的签名脚本读取密钥，`GuestClient` 重新可用。([#402](https://github.com/d60/twikit/issues/402)、[#385](https://github.com/d60/twikit/issues/385))
 - **`get_latest_friends` 的 404** — 在 v1.1 端点下线后，改走 GraphQL 的 `Following` 端点。([#397](https://github.com/d60/twikit/issues/397))
 - **`'Client' object has no attribute '_ui_metrix'`** — 修复了验证码解锁流程。([#333](https://github.com/d60/twikit/issues/333))
 - **`get_bookmark_folders().next()` 死循环** — 修正了写错的分页参数。([#334](https://github.com/d60/twikit/issues/334)、[#335](https://github.com/d60/twikit/issues/335))

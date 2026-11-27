@@ -44,7 +44,7 @@ pip install git+https://github.com/PawiX25/twifork.git
 
 本家の PyPI 版（`twikit==2.3.3`）は、2026 年現在いくつもの箇所が壊れています。twifork ではそれらを修正しました。各項目は対応する本家の Issue にリンクしています。
 
-- **ClientTransaction / `Couldn't get KEY_BYTE indices`** — X の新しい webpack バンドルに合わせて `ondemand.s.js` の解析を更新。GraphQL リクエストが再び通るようになりました。([#408](https://github.com/d60/twikit/issues/408), [#409](https://github.com/d60/twikit/issues/409), [#304](https://github.com/d60/twikit/issues/304))
+- **ClientTransaction / `Couldn't get KEY_BYTE indices`** — X の新しい webpack バンドルに合わせて `ondemand.s.js` の解析を更新。GraphQL リクエストが再び通るようになりました。その後 X は全ユーザー向けにこのバンドルを x-web アプリへ置き換えたため、キーはその署名スクリプト（signer）から読み取るようになりました（[twifork#8](https://github.com/PawiX25/twifork/issues/8)）。([#408](https://github.com/d60/twikit/issues/408), [#409](https://github.com/d60/twikit/issues/409), [#304](https://github.com/d60/twikit/issues/304))
 - **`SearchTimeline` や `friends/list` で散発的に出る、居座り型の `404`** — `x-client-transaction-id` のアニメーションキー計算で X 側の `frame_time` の丸め処理が抜けており、一部の `Client` では作り直すまで厳格なリクエストがすべて 404 になっていました。これを直したので、ランダムに出ていた 404 は解消されています。([#357](https://github.com/d60/twikit/issues/357), [#397](https://github.com/d60/twikit/issues/397))
 - **任意フィールド欠落時の `KeyError`**（`User.__init__` と `Client.request`）— `.get()` で安全に読むようにしました。([#417](https://github.com/d60/twikit/issues/417))
 - **ユーザーの `name` / `screen_name` が空になる**（検索結果などで発生）— X が `name`・`screen_name`・`created_at`・アイコン・場所などを `legacy` から新しいサブオブジェクトへ移したため、新旧どちらの形でも読めるようにしました。
@@ -52,7 +52,7 @@ pip install git+https://github.com/PawiX25/twifork.git
 - **ツイートが無いアカウントでの `get_user_tweets` の `KeyError: 'entries'` / `IndexError`** — 空・カーソル無しのタイムラインでも、落ちずに空の結果を返します。([#361](https://github.com/d60/twikit/issues/361), [#216](https://github.com/d60/twikit/issues/216))
 - **`get_trends` が非推奨で何も返さない** — `GenericTimelineById` ベースに作り直し。あわせて `get_explore_page()` も追加しました。([#389](https://github.com/d60/twikit/issues/389))
 - **レート制限時の `RecursionError`** — 429 のリカバリ処理が再帰しないようにしました。
-- **`GuestClient.activate()` の 404** — ゲストクライアントが `User-Agent` を送るようにし、ユーザー情報の解析も安全にしました。([#402](https://github.com/d60/twikit/issues/402), [#385](https://github.com/d60/twikit/issues/385))
+- **`GuestClient.activate()` の 404** — ゲストクライアントが `User-Agent` を送るようにし、ユーザー情報の解析も安全にしました。ログアウト状態の x-web アプリの署名スクリプトからキーを読むようになり、`GuestClient` は再び動作します。([#402](https://github.com/d60/twikit/issues/402), [#385](https://github.com/d60/twikit/issues/385))
 - **`get_latest_friends` の 404** — 廃止された v1.1 の代わりに、GraphQL の `Following` エンドポイントを使うようにしました。([#397](https://github.com/d60/twikit/issues/397))
 - **`'Client' object has no attribute '_ui_metrix'`** — captcha 解除の処理を修正。([#333](https://github.com/d60/twikit/issues/333))
 - **`get_bookmark_folders().next()` が無限ループ** — 壊れていたページネーション用パラメータを修正。([#334](https://github.com/d60/twikit/issues/334), [#335](https://github.com/d60/twikit/issues/335))
